@@ -1,0 +1,14 @@
+[default]
+address = "0.0.0.0"
+port = 8000
+
+
+[default.email]
+sending_email = "reports@yourcompany.com"
+destination_email = "recipient@yourcompany.com"
+mail_relay_host = "smtp.gmail.com"
+mail_relay_port = 587
+smtp_username = "reports@yourcompany.com"
+smtp_password = "your-app-password"
+smtp_use_tls = true
+default_subject = "ASL/ASN Daily Analysis Report"
