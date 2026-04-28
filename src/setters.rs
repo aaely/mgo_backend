@@ -1492,7 +1492,8 @@ pub async fn upload_part_asn(
                 shipDate:      $shipDate,
                 dock:          $dock,
                 eda:           $eda,
-                eta:           $eta
+                eta:           $eta,
+                mode:          $mode
             })
         ")
         .param("scac",          asn.scac.clone())
@@ -1508,7 +1509,8 @@ pub async fn upload_part_asn(
         .param("shipDate",      asn.shipDate.clone())
         .param("dock",          asn.dock.clone())
         .param("eda",           asn.eda.clone())
-        .param("eta",           asn.eta.clone());
+        .param("eta",           asn.eta.clone())
+        .param("mode",          asn.mode.clone());
 
         graph.run(q).await.map_err(|e| {
             eprintln!("Failed to upload PartASN: {:?}", e);

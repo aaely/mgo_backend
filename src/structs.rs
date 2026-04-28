@@ -381,15 +381,16 @@ pub struct PartASN {
     pub deck:         String,
     pub part:         String,
     pub duns:         String,
-    pub quantity:     f64,
-    pub status:       u32,
+    pub quantity:     Option<f64>,
+    pub status:       Option<u32>,
     pub sid:          String,
-    pub countComment: String,
-    pub shipComment: String,
-    pub shipDate:    String,
+    pub countComment: Option<String>,
+    pub shipComment:  String,
+    pub shipDate:     String,
     pub dock:         String,
     pub eda:          String,
     pub eta:          String,
+    pub mode:         String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -575,7 +576,7 @@ pub async fn late_trailer_service(graph: Arc<Graph>, ws_list: WebSocketList) {
 
     loop {
         interval.tick().await;
-
+        println!("Running late trailer service...");
         let now = chrono::Local::now();
         let fifteen_mins_ago = now - chrono::Duration::minutes(15);
 
@@ -586,8 +587,6 @@ pub async fn late_trailer_service(graph: Arc<Graph>, ws_list: WebSocketList) {
             AND (t.actualEndTime = '' OR t.actualEndTime IS NULL)
             AND t.scheduleStartDate <> ''
             AND t.adjustedStartTime <> ''
-            AND t.dockCode <> 'U'
-            AND t.dockCode <> 'V'
             AND (t.scheduleStartDate + 'T' + t.adjustedStartTime) <= $cutoff
             SET t.statusOX = 'P'
             RETURN t
