@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use chrono::{DateTime, Utc, Timelike, Datelike};
+use chrono::{DateTime, Duration, NaiveDate, Utc, Timelike, Datelike};
 
 pub fn get_shift(hour: u32) -> &'static str {
     match hour {
@@ -42,6 +42,47 @@ pub fn parse_eta(eta: &str, window_start: chrono::NaiveDateTime) -> Option<chron
         // Time is earlier in the day than window_start time (e.g. window starts 22:00,
         // eta is 12:15 — that's the next calendar day)
         Some(candidate + chrono::Duration::days(1))
+    }
+}
+
+pub struct ShiftWindow {
+    pub date1:  String,
+    pub hours1: Vec<String>,
+    pub date2:  String,
+    pub hours2: Vec<String>,
+}
+
+pub fn get_shift_window(date: &str, hour: u32) -> ShiftWindow {
+    let hour_range = |start: u32, end: u32| -> Vec<String> {
+        (start..=end).map(|h| format!("{:02}", h)).collect()
+    };
+    let offset_date = |d: &str, days: i64| -> String {
+        NaiveDate::parse_from_str(d, "%Y-%m-%d")
+            .map(|nd| (nd + Duration::days(days)).format("%Y-%m-%d").to_string())
+            .unwrap_or_else(|_| d.to_string())
+    };
+
+    match hour {
+        6..=13 => ShiftWindow {
+            date1: date.to_string(), hours1: hour_range(6, 13),
+            date2: date.to_string(), hours2: vec![],
+        },
+        14..=21 => ShiftWindow {
+            date1: date.to_string(), hours1: hour_range(14, 21),
+            date2: date.to_string(), hours2: vec![],
+        },
+        22 | 23 => ShiftWindow {
+            date1: date.to_string(),   hours1: hour_range(22, 23),
+            date2: offset_date(date, 1), hours2: hour_range(0, 5),
+        },
+        0..=5 => ShiftWindow {
+            date1: offset_date(date, -1), hours1: hour_range(22, 23),
+            date2: date.to_string(),      hours2: hour_range(0, 5),
+        },
+        _ => ShiftWindow {
+            date1: date.to_string(), hours1: vec![],
+            date2: date.to_string(), hours2: vec![],
+        },
     }
 }
 

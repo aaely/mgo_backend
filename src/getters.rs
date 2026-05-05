@@ -956,6 +956,7 @@ pub async fn get_scan_asn(
                 countComment: node.get("countComment").unwrap_or_default(),
                 shipComment:  node.get("shipComment").unwrap_or_default(),
                 shipDate:     node.get("shipDate").unwrap_or_default(),
+                mode:         node.get("mode").unwrap_or_default(),
                 dock:         node.get("dock").unwrap_or_default(),
                 eda:          node.get("eda").unwrap_or_default(),
                 eta:          node.get("eta").unwrap_or_default(),
@@ -1098,4 +1099,130 @@ pub async fn get_edock_asn(state: &State<AppState>) -> Json<Vec<PartASN>> {
     }
 
     Json(parts)
+}
+
+#[get("/api/dock_count?<date>&<hour>&<dock>")]
+pub async fn get_dock_count(
+    date:  String,
+    hour:  String,
+    dock:  String,
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+) -> Result<Json<DockCountResponse>, Json<&'static str>> {
+    let graph = &state.graph;
+    let mut hr_total: u32 = 0;
+    let mut shift_total: u32 = 0;
+
+    let hour_u32: u32 = hour.parse().unwrap_or(0);
+    let win = get_shift_window(&date, hour_u32);
+
+    // ── Per-hour counts ──
+
+    let q1 = query("
+        MATCH (e:ExceptionLogEntry)
+        WHERE e.newDate = $date AND e.dock = $dock AND substring(e.newTime, 0, 2) = $hour
+        RETURN count(e) AS cnt
+    ")
+    .param("date", date.clone())
+    .param("dock", dock.clone())
+    .param("hour", hour.clone());
+
+    if let Ok(mut result) = graph.execute(q1).await {
+        if let Ok(Some(row)) = result.next().await {
+            hr_total += row.get::<i64>("cnt").unwrap_or(0) as u32;
+        }
+    }
+
+    let q2 = query("
+        MATCH (d:DyCommLogEntry)
+        WHERE d.deliveryDate = $date AND d.dock = $dock AND substring(d.deliveryTime, 0, 2) = $hour
+        RETURN count(d) AS cnt
+    ")
+    .param("date", date.clone())
+    .param("dock", dock.clone())
+    .param("hour", hour.clone());
+
+    if let Ok(mut result) = graph.execute(q2).await {
+        if let Ok(Some(row)) = result.next().await {
+            hr_total += row.get::<i64>("cnt").unwrap_or(0) as u32;
+        }
+    }
+
+    let q3 = query("
+        MATCH (l:LMSRecord)
+        WHERE l.schedule_arrival_time STARTS WITH $date
+          AND l.location = $dock
+          AND substring(l.schedule_arrival_time, 11, 2) = $hour
+        RETURN count(l) AS cnt
+    ")
+    .param("date", date.clone())
+    .param("dock", dock.clone())
+    .param("hour", hour.clone());
+
+    if let Ok(mut result) = graph.execute(q3).await {
+        if let Ok(Some(row)) = result.next().await {
+            hr_total += row.get::<i64>("cnt").unwrap_or(0) as u32;
+        }
+    }
+
+    // ── Shift-window counts ──
+
+    let qs1 = query("
+        MATCH (e:ExceptionLogEntry)
+        WHERE ((e.newDate = $date1 AND substring(e.newTime, 0, 2) IN $hours1)
+            OR (e.newDate = $date2 AND substring(e.newTime, 0, 2) IN $hours2))
+          AND e.dock = $dock
+        RETURN count(e) AS cnt
+    ")
+    .param("date1", win.date1.clone())
+    .param("hours1", win.hours1.clone())
+    .param("date2", win.date2.clone())
+    .param("hours2", win.hours2.clone())
+    .param("dock", dock.clone());
+
+    if let Ok(mut result) = graph.execute(qs1).await {
+        if let Ok(Some(row)) = result.next().await {
+            shift_total += row.get::<i64>("cnt").unwrap_or(0) as u32;
+        }
+    }
+
+    let qs2 = query("
+        MATCH (d:DyCommLogEntry)
+        WHERE ((d.deliveryDate = $date1 AND substring(d.deliveryTime, 0, 2) IN $hours1)
+            OR (d.deliveryDate = $date2 AND substring(d.deliveryTime, 0, 2) IN $hours2))
+          AND d.dock = $dock
+        RETURN count(d) AS cnt
+    ")
+    .param("date1", win.date1.clone())
+    .param("hours1", win.hours1.clone())
+    .param("date2", win.date2.clone())
+    .param("hours2", win.hours2.clone())
+    .param("dock", dock.clone());
+
+    if let Ok(mut result) = graph.execute(qs2).await {
+        if let Ok(Some(row)) = result.next().await {
+            shift_total += row.get::<i64>("cnt").unwrap_or(0) as u32;
+        }
+    }
+
+    let qs3 = query("
+        MATCH (l:LMSRecord)
+        WHERE ((l.schedule_arrival_time STARTS WITH $date1 AND substring(l.schedule_arrival_time, 11, 2) IN $hours1)
+            OR (l.schedule_arrival_time STARTS WITH $date2 AND substring(l.schedule_arrival_time, 11, 2) IN $hours2))
+          AND l.location = $dock
+        RETURN count(l) AS cnt
+    ")
+    .param("date1", win.date1.clone())
+    .param("hours1", win.hours1.clone())
+    .param("date2", win.date2.clone())
+    .param("hours2", win.hours2.clone())
+    .param("dock", dock.clone());
+
+    if let Ok(mut result) = graph.execute(qs3).await {
+        if let Ok(Some(row)) = result.next().await {
+            shift_total += row.get::<i64>("cnt").unwrap_or(0) as u32;
+        }
+    }
+
+    Ok(Json(DockCountResponse { hr_total, shift_total }))
 }

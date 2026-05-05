@@ -1508,6 +1508,7 @@ pub async fn upload_part_asn(
         .param("shipComment",   asn.shipComment.clone())
         .param("shipDate",      asn.shipDate.clone())
         .param("dock",          asn.dock.clone())
+        .param("mode",          asn.mode.clone())
         .param("eda",           asn.eda.clone())
         .param("eta",           asn.eta.clone())
         .param("mode",          asn.mode.clone());

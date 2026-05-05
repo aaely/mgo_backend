@@ -485,6 +485,12 @@ pub struct PartAlert {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct DockCountResponse {
+    pub hr_total:    u32,
+    pub shift_total: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateUserRequest {
     pub name:      String,
     pub full_name: String,

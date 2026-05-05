@@ -122,6 +122,7 @@ async fn main() {
             get_staged_trailers,
             get_live_trailers,
             push_add_on,
+            get_dock_count,
             restart_week,
             saturday_counts,
             set_shift_status,
