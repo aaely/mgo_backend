@@ -956,7 +956,6 @@ pub async fn get_scan_asn(
                 countComment: node.get("countComment").unwrap_or_default(),
                 shipComment:  node.get("shipComment").unwrap_or_default(),
                 shipDate:     node.get("shipDate").unwrap_or_default(),
-                mode:         node.get("mode").unwrap_or_default(),
                 dock:         node.get("dock").unwrap_or_default(),
                 eda:          node.get("eda").unwrap_or_default(),
                 eta:          node.get("eta").unwrap_or_default(),
