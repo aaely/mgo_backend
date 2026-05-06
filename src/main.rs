@@ -120,6 +120,7 @@ async fn main() {
             update_io,
             update_live_trailer,
             get_staged_trailers,
+            get_past_shift,
             get_live_trailers,
             push_add_on,
             get_dock_count,

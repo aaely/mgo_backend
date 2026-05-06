@@ -440,6 +440,65 @@ pub async fn get_trailers_grouped(
     }
 }
 
+#[get("/api/get_past_shift/<operational_date>")]
+pub async fn get_past_shift(
+    operational_date: String,
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+) -> Result<Json<Vec<TrailerRecord>>, Json<&'static str>> {
+    let graph = &state.graph;
+
+    let q = query("
+        MATCH (o:OpDate {date: $operational_date})-[:HAS_TRAILER]->(r:TrailerRecord)
+        RETURN r
+    ")
+    .param("operational_date", operational_date);
+
+    match graph.execute(q).await {
+        Ok(mut result) => {
+            let mut records: Vec<TrailerRecord> = Vec::new();
+            while let Ok(Some(row)) = result.next().await {
+                let node: Node = row.get("r").map_err(|_| Json("Failed to get node"))?;
+                records.push(TrailerRecord {
+                    uuid:              node.get("uuid").unwrap_or_default(),
+                    hour:              node.get("hour").unwrap_or_default(),
+                    dateShift:         node.get("dateShift").unwrap_or_default(),
+                    lmsAccent:         node.get("lmsAccent").unwrap_or_default(),
+                    dockCode:          node.get("dockCode").unwrap_or_default(),
+                    acaType:           node.get("acaType").unwrap_or_default(),
+                    status:            node.get("status").unwrap_or_default(),
+                    routeId:           node.get("routeId").unwrap_or_default(),
+                    scac:              node.get("scac").unwrap_or_default(),
+                    trailer1:          node.get("trailer1").unwrap_or_default(),
+                    trailer2:          node.get("trailer2").unwrap_or_default(),
+                    firstSupplier:     node.get("firstSupplier").unwrap_or_default(),
+                    dockStopSequence:  node.get("dockStopSequence").unwrap_or_default(),
+                    planStartDate:     node.get("planStartDate").unwrap_or_default(),
+                    planStartTime:     node.get("planStartTime").unwrap_or_default(),
+                    scheduleStartDate: node.get("scheduleStartDate").unwrap_or_default(),
+                    adjustedStartTime: node.get("adjustedStartTime").unwrap_or_default(),
+                    scheduleEndDate:   node.get("scheduleEndDate").unwrap_or_default(),
+                    scheduleEndTime:   node.get("scheduleEndTime").unwrap_or_default(),
+                    gateArrivalTime:   node.get("gateArrivalTime").unwrap_or_default(),
+                    actualStartTime:   node.get("actualStartTime").unwrap_or_default(),
+                    actualEndTime:     node.get("actualEndTime").unwrap_or_default(),
+                    statusOX:          node.get("statusOX").unwrap_or_default(),
+                    loadComments:      node.get("loadComments").unwrap_or_default(),
+                    ryderComments:     node.get("ryderComments").unwrap_or_default(),
+                    lateComments:      Some(node.get("lateComments").unwrap_or_default()),
+                    gmComments:        Some(node.get("gmComments").unwrap_or_default()),
+                    lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
+                });
+            }
+            Ok(Json(records))
+        }
+        Err(e) => {
+            eprintln!("Failed to fetch past shift: {:?}", e);
+            Err(Json("Failed to fetch past shift"))
+        }
+    }
+}
+
 #[get("/api/get_live_trailers")]
 pub async fn get_live_trailers(
     state: &State<AppState>,
