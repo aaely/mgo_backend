@@ -142,7 +142,8 @@ async fn main() {
             upload_dycomm,
             upload_in_transit,
             register,
-            upload_lms
+            upload_lms,
+            push_reschedules
             ])
         .manage(state)
         .launch()

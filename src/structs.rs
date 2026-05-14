@@ -593,6 +593,7 @@ pub async fn late_trailer_service(graph: Arc<Graph>, ws_list: WebSocketList) {
             AND (t.actualEndTime = '' OR t.actualEndTime IS NULL)
             AND t.scheduleStartDate <> ''
             AND t.adjustedStartTime <> ''
+            AND t.dockCode <> 'Y'
             AND (t.scheduleStartDate + 'T' + t.adjustedStartTime) <= $cutoff
             SET t.statusOX = 'P'
             RETURN t

@@ -445,13 +445,19 @@ pub async fn get_past_shift(
     operational_date: String,
     state: &State<AppState>,
     _user: AuthenticatedUser,
+    role: Role,
 ) -> Result<Json<Vec<TrailerRecord>>, Json<&'static str>> {
     let graph = &state.graph;
-
+    let op_date = operational_date.split("-").collect::<Vec<&str>>();
+    let formatted = op_date[0..3].join("-");
+    let shift = op_date[3];
+    println!("Fetching past shift for date: {}, shift: {}", formatted, shift);
     let q = query("
-        MATCH (o:OpDate {date: $operational_date})-[:HAS_TRAILER]->(r:TrailerRecord)
+        MATCH (o:OpDate {date: $formatted})-[:HAS_TRAILER]->(r:TrailerRecord)
+        WHERE r.dateShift = $operational_date
         RETURN r
     ")
+    .param("formatted", formatted)
     .param("operational_date", operational_date);
 
     match graph.execute(q).await {
@@ -490,6 +496,12 @@ pub async fn get_past_shift(
                     lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
                 });
             }
+            if role.0.contains("univ") {
+                records.retain(|r| r.dockCode == "Y");
+            }
+            if role.0.contains("vaa") {
+                records.retain(|r| r.dockCode == "V");
+            }
             Ok(Json(records))
         }
         Err(e) => {
@@ -503,6 +515,7 @@ pub async fn get_past_shift(
 pub async fn get_live_trailers(
     state: &State<AppState>,
     _user: AuthenticatedUser,
+    role: Role,
 ) -> Result<Json<Vec<TrailerRecord>>, Json<&'static str>> {
     let graph = &state.graph;
 
@@ -544,6 +557,12 @@ pub async fn get_live_trailers(
                     lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
                 });
             }
+            if role.0.contains("univ") {
+                records.retain(|r| r.dockCode == "U");
+            }
+            if role.0.contains("vaa") {
+                records.retain(|r| r.dockCode == "V");
+            }
             Ok(Json(records))
         }
         Err(e) => {
@@ -557,6 +576,7 @@ pub async fn get_live_trailers(
 pub async fn get_staged_trailers(
     state: &State<AppState>,
     _user: AuthenticatedUser,
+    role: Role,
 ) -> Result<Json<Vec<TrailerRecord>>, Json<&'static str>> {
     let graph = &state.graph;
 
@@ -601,6 +621,12 @@ pub async fn get_staged_trailers(
                     gmComments:        Some(node.get("gmComments").unwrap_or_default()),
                     lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
                 });
+            }
+            if role.0.contains("univ") {
+                records.retain(|r| r.dockCode == "U");
+            }
+            if role.0.contains("vaa") {
+                records.retain(|r| r.dockCode == "V");
             }
             Ok(Json(records))
         }

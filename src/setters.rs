@@ -632,6 +632,10 @@ pub async fn roll_next_shift(
     let graph = &state.graph;
     let operational_date = req.operational_date.clone();
 
+    if role.0 != "admin" && role.0 != "manager" {
+        return Err(Json("Unauthorized: Admin role required"));
+    }
+
     // ── Query 1: Snapshot all LiveTrailers into TrailerRecords ──
     let snapshot_query = query("
         MERGE (o:OpDate {date: $operational_date})
@@ -661,7 +665,7 @@ pub async fn roll_next_shift(
             actualStartTime:    t.actualStartTime,
             actualEndTime:      t.actualEndTime,
             statusOX:           CASE
-                                    WHEN t.gateArrivalTime <> '' THEN 'C'
+                                    WHEN t.gateArrivalTime <> '' AND (t.actualEndTime = '' OR t.actualEndTime IS NULL) THEN 'C'
                                     WHEN t.gateArrivalTime = '' AND t.actualEndTime = '' THEN 'N'
                                     ELSE t.statusOX
                                 END,
@@ -683,7 +687,7 @@ pub async fn roll_next_shift(
     // ── Query 2: Delete LiveTrailers where actualEndTime is not empty ──
     let delete_query = query("
         MATCH (t:LiveTrailer)
-        WHERE t.actualEndTime <> ''
+        WHERE t.gateArrivalTime <> '' AND (t.actualEndTime <> '' OR t.actualEndTime IS NULL)
         DELETE t
     ");
 
@@ -697,7 +701,6 @@ pub async fn roll_next_shift(
         MATCH (t:LiveTrailer)
         SET t.statusOX = CASE
             WHEN t.gateArrivalTime <> '' THEN 'C'
-            WHEN t.actualStartTime = '' THEN 'N'
             ELSE t.statusOX
         END
     ");
@@ -899,7 +902,7 @@ pub async fn upload_on_deck(
     let graph = &state.graph;
 
     let mut created_lines: Vec<TrailerRecord> = Vec::new();
-    
+
     for line in upload_on_deck.iter() {
         let query = query("
         CREATE(t:StagedTrailer {
@@ -963,7 +966,8 @@ pub async fn upload_on_deck(
 
         match graph.execute(query).await {
             Ok(mut result) => {
-                if let Ok(Some(row)) = result.next().await {
+                match result.next().await {
+                Ok(Some(row)) => {
                     let trailer_node: Node = row.get("t").map_err(|_| {
                         Json("Failed to get node from record")
                     })?;
@@ -992,7 +996,7 @@ pub async fn upload_on_deck(
                     let gateArrivalTime: String = trailer_node.get("gateArrivalTime").unwrap_or_default();
                     let actualStartTime: String = trailer_node.get("actualStartTime").unwrap_or_default();
                     let actualEndTime: String = trailer_node.get("actualEndTime").unwrap_or_default();
-                    let statusOX: String = trailer_node.get("statusOx").unwrap_or_default();
+                    let statusOX: String = trailer_node.get("statusOX").unwrap_or_default();
                     let loadComments: String = trailer_node.get("loadComments").unwrap_or_default();
                     let ryderComments: String = trailer_node.get("ryderComments").unwrap_or_default();
                     let lateComments: String = trailer_node.get("lateComments").unwrap_or_default();
@@ -1029,6 +1033,9 @@ pub async fn upload_on_deck(
                         lowestDoh: Some(lowestDoh)
                     };
                     created_lines.push(trailer);
+                }
+                Ok(None) => {}
+                Err(_) => {}
                 }
             }
             Err(e) => {
@@ -1705,4 +1712,88 @@ pub async fn delete_user(
     })?;
 
     Ok(Json("User deleted"))
+}
+
+#[post("/api/push_reschedules", format = "json", data = "<reschedules>")]
+pub async fn push_reschedules(
+    reschedules: Json<Vec<TrailerRecord>>,
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+    role: Role,
+) -> Result<Json<&'static str>, Json<&'static str>> {
+    if role.0 != "admin" && role.0 != "supervisor" {
+        return Err(Json("Forbidden"));
+    }
+
+    let graph = &state.graph;
+
+    for line in reschedules.iter() {
+        let q = query("
+            CREATE (r:RescheduledTrailer {
+                uuid:              $uuid,
+                hour:              $hour,
+                dateShift:         $dateShift,
+                lmsAccent:         $lmsAccent,
+                dockCode:          $dockCode,
+                acaType:           $acaType,
+                status:            $status,
+                routeId:           $routeId,
+                scac:              $scac,
+                trailer1:          $trailer1,
+                trailer2:          $trailer2,
+                firstSupplier:     $firstSupplier,
+                dockStopSequence:  $dockStopSequence,
+                planStartDate:     $planStartDate,
+                planStartTime:     $planStartTime,
+                scheduleStartDate: $scheduleStartDate,
+                adjustedStartTime: $adjustedStartTime,
+                scheduleEndDate:   $scheduleEndDate,
+                scheduleEndTime:   $scheduleEndTime,
+                gateArrivalTime:   $gateArrivalTime,
+                actualStartTime:   $actualStartTime,
+                actualEndTime:     $actualEndTime,
+                statusOX:          $statusOX,
+                lowestDoh:         $lowestDoh,
+                loadComments:      $loadComments,
+                ryderComments:     $ryderComments,
+                lateComments:      $lateComments,
+                gmComments:        $gmComments
+            })
+        ")
+        .param("uuid",              line.uuid.clone())
+        .param("hour",              line.hour.clone())
+        .param("dateShift",         line.dateShift.clone())
+        .param("lmsAccent",         line.lmsAccent.clone())
+        .param("dockCode",          line.dockCode.clone())
+        .param("acaType",           line.acaType.clone())
+        .param("status",            line.status.clone())
+        .param("routeId",           line.routeId.clone())
+        .param("scac",              line.scac.clone())
+        .param("trailer1",          line.trailer1.clone())
+        .param("trailer2",          line.trailer2.clone())
+        .param("firstSupplier",     line.firstSupplier.clone())
+        .param("dockStopSequence",  line.dockStopSequence.clone())
+        .param("planStartDate",     line.planStartDate.clone())
+        .param("planStartTime",     line.planStartTime.clone())
+        .param("scheduleStartDate", line.scheduleStartDate.clone())
+        .param("adjustedStartTime", line.adjustedStartTime.clone())
+        .param("scheduleEndDate",   line.scheduleEndDate.clone())
+        .param("scheduleEndTime",   line.scheduleEndTime.clone())
+        .param("gateArrivalTime",   line.gateArrivalTime.clone())
+        .param("actualStartTime",   line.actualStartTime.clone())
+        .param("actualEndTime",     line.actualEndTime.clone())
+        .param("statusOX",          line.statusOX.clone())
+        .param("lowestDoh",         line.lowestDoh.clone())
+        .param("loadComments",      line.loadComments.clone())
+        .param("ryderComments",     line.ryderComments.clone())
+        .param("lateComments",      line.lateComments.clone().unwrap_or_default())
+        .param("gmComments",        line.gmComments.clone().unwrap_or_default());
+
+        graph.run(q).await.map_err(|e| {
+            eprintln!("Failed to create rescheduled trailer: {:?}", e);
+            Json("Failed to create rescheduled trailer")
+        })?;
+    }
+
+    Ok(Json("Reschedules pushed"))
 }
