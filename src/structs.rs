@@ -58,6 +58,7 @@ pub struct IOResponse {
 #[derive(Serialize, Deserialize, PartialEq, Default, Debug)]
 pub struct TrailerRecord {
     pub hour: String,
+    pub origin: String,
     pub dateShift: String,
     pub lmsAccent: String,
     pub dockCode: String,
@@ -606,6 +607,7 @@ pub async fn late_trailer_service(graph: Arc<Graph>, ws_list: WebSocketList) {
                     if let Ok(node) = row.get::<Node>("t") {
                         let updated = TrailerRecord {
                             uuid:              node.get("uuid").unwrap_or_default(),
+                            origin:            node.get("origin").unwrap_or_default(),
                             hour:              node.get("hour").unwrap_or_default(),
                             dateShift:         node.get("dateShift").unwrap_or_default(),
                             lmsAccent:         node.get("lmsAccent").unwrap_or_default(),

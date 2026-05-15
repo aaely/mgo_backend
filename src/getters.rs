@@ -467,6 +467,7 @@ pub async fn get_past_shift(
                 let node: Node = row.get("r").map_err(|_| Json("Failed to get node"))?;
                 records.push(TrailerRecord {
                     uuid:              node.get("uuid").unwrap_or_default(),
+                    origin:            node.get("origin").unwrap_or_default(),
                     hour:              node.get("hour").unwrap_or_default(),
                     dateShift:         node.get("dateShift").unwrap_or_default(),
                     lmsAccent:         node.get("lmsAccent").unwrap_or_default(),
@@ -528,6 +529,7 @@ pub async fn get_live_trailers(
                 let node: Node = row.get("t").map_err(|_| Json("Failed to get node"))?;
                 records.push(TrailerRecord {
                     uuid:              node.get("uuid").unwrap_or_default(),
+                    origin:            node.get("origin").unwrap_or_default(),
                     hour:              node.get("hour").unwrap_or_default(),
                     dateShift:         node.get("dateShift").unwrap_or_default(),
                     lmsAccent:         node.get("lmsAccent").unwrap_or_default(),
@@ -593,6 +595,7 @@ pub async fn get_staged_trailers(
                 let node: Node = row.get("t").map_err(|_| Json("Failed to get node"))?;
                 records.push(TrailerRecord {
                     uuid:              node.get("uuid").unwrap_or_default(),
+                    origin:            node.get("origin").unwrap_or_default(),
                     hour:              node.get("hour").unwrap_or_default(),
                     dateShift:         node.get("dateShift").unwrap_or_default(),
                     lmsAccent:         node.get("lmsAccent").unwrap_or_default(),

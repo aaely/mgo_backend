@@ -832,6 +832,7 @@ pub async fn push_add_on (
 
                 let created = TrailerRecord {
                     uuid:              node.get("uuid").unwrap_or_default(),
+                    origin:            node.get("origin").unwrap_or_default(),
                     hour:              node.get("hour").unwrap_or_default(),
                     dateShift:         node.get("dateShift").unwrap_or_default(),
                     lmsAccent:         node.get("lmsAccent").unwrap_or_default(),
@@ -907,7 +908,9 @@ pub async fn upload_on_deck(
         let query = query("
         CREATE(t:StagedTrailer {
             uuid: $uuid,
+            origin: $origin,
             hour: $hour,
+            origin: $origin,
             dateShift: $dateShift,
             lmsAccent: $lmsAccent,
             dockCode: $dockCode,
@@ -937,6 +940,7 @@ pub async fn upload_on_deck(
         RETURN t
     ")
     .param("hour", line.hour.clone())
+    .param("origin", line.origin.clone())
     .param("dateShift", line.dateShift.clone())
     .param("lmsAccent", line.lmsAccent.clone())
     .param("dockCode", line.dockCode.clone())
@@ -973,37 +977,39 @@ pub async fn upload_on_deck(
                     })?;
                     
                     // Extract all fields
-                    let uuid: String = trailer_node.get("uuid").unwrap_or_default();
-                    let hour: String = trailer_node.get("hour").unwrap_or_default();
-                    let dateShift: String = trailer_node.get("dateShift").unwrap_or_default();
-                    let lmsAccent: String = trailer_node.get("lmsAccent").unwrap_or_default();
-                    let dockCode: String = trailer_node.get("dockCode").unwrap_or_default();
-                    let acaType: String = trailer_node.get("acaType").unwrap_or_default();
-                    let status: String = trailer_node.get("status").unwrap_or_default();
-                    let routeId: String = trailer_node.get("routeId").unwrap_or_default();
-                    let scac: String = trailer_node.get("scac").unwrap_or_default();
-                    let trailer1: String = trailer_node.get("trailer1").unwrap_or_default();
-                    let trailer2: String = trailer_node.get("trailer2").unwrap_or_default();
-                    let firstSupplier: String = trailer_node.get("firstSupplier").unwrap_or_default();
-                    let dockStopSequence: String = trailer_node.get("dockStopSequence").unwrap_or_default();
-                    let planStartDate: String = trailer_node.get("planStartDate").unwrap_or_default();
-                    let planStartTime: String = trailer_node.get("planStartTime").unwrap_or_default();
+                    let uuid:              String = trailer_node.get("uuid").unwrap_or_default();
+                    let origin:            String = trailer_node.get("origin").unwrap_or_default();
+                    let hour:              String = trailer_node.get("hour").unwrap_or_default();
+                    let dateShift:         String = trailer_node.get("dateShift").unwrap_or_default();
+                    let lmsAccent:         String = trailer_node.get("lmsAccent").unwrap_or_default();
+                    let dockCode:          String = trailer_node.get("dockCode").unwrap_or_default();
+                    let acaType:           String = trailer_node.get("acaType").unwrap_or_default();
+                    let status:            String = trailer_node.get("status").unwrap_or_default();
+                    let routeId:           String = trailer_node.get("routeId").unwrap_or_default();
+                    let scac:              String = trailer_node.get("scac").unwrap_or_default();
+                    let trailer1:          String = trailer_node.get("trailer1").unwrap_or_default();
+                    let trailer2:          String = trailer_node.get("trailer2").unwrap_or_default();
+                    let firstSupplier:     String = trailer_node.get("firstSupplier").unwrap_or_default();
+                    let dockStopSequence:  String = trailer_node.get("dockStopSequence").unwrap_or_default();
+                    let planStartDate:     String = trailer_node.get("planStartDate").unwrap_or_default();
+                    let planStartTime:     String = trailer_node.get("planStartTime").unwrap_or_default();
                     let scheduleStartDate: String = trailer_node.get("scheduleStartDate").unwrap_or_default();
                     let adjustedStartTime: String = trailer_node.get("adjustedStartTime").unwrap_or_default();
-                    let scheduleEndDate: String = trailer_node.get("scheduleEndDate").unwrap_or_default();
-                    let scheduleEndTime: String = trailer_node.get("scheduleEndTime").unwrap_or_default();
-                    let lowestDoh: String = trailer_node.get("lowestDoh").unwrap_or("".to_string());
-                    let gateArrivalTime: String = trailer_node.get("gateArrivalTime").unwrap_or_default();
-                    let actualStartTime: String = trailer_node.get("actualStartTime").unwrap_or_default();
-                    let actualEndTime: String = trailer_node.get("actualEndTime").unwrap_or_default();
-                    let statusOX: String = trailer_node.get("statusOX").unwrap_or_default();
-                    let loadComments: String = trailer_node.get("loadComments").unwrap_or_default();
-                    let ryderComments: String = trailer_node.get("ryderComments").unwrap_or_default();
-                    let lateComments: String = trailer_node.get("lateComments").unwrap_or_default();
-                    let gmComments: String = trailer_node.get("gmComments").unwrap_or_default();
+                    let scheduleEndDate:   String = trailer_node.get("scheduleEndDate").unwrap_or_default();
+                    let scheduleEndTime:   String = trailer_node.get("scheduleEndTime").unwrap_or_default();
+                    let lowestDoh:         String = trailer_node.get("lowestDoh").unwrap_or("".to_string());
+                    let gateArrivalTime:   String = trailer_node.get("gateArrivalTime").unwrap_or_default();
+                    let actualStartTime:   String = trailer_node.get("actualStartTime").unwrap_or_default();
+                    let actualEndTime:     String = trailer_node.get("actualEndTime").unwrap_or_default();
+                    let statusOX:          String = trailer_node.get("statusOX").unwrap_or_default();
+                    let loadComments:      String = trailer_node.get("loadComments").unwrap_or_default();
+                    let ryderComments:     String = trailer_node.get("ryderComments").unwrap_or_default();
+                    let lateComments:      String = trailer_node.get("lateComments").unwrap_or_default();
+                    let gmComments:        String = trailer_node.get("gmComments").unwrap_or_default();
 
                     let trailer = TrailerRecord {
                         uuid,
+                        origin,
                         hour,
                         dateShift,
                         lmsAccent,
@@ -1044,6 +1050,68 @@ pub async fn upload_on_deck(
             }
         }
     }
+    for line in upload_on_deck.iter() {
+        if line.origin == "DropYard" {
+            let archive_q = query("
+                MATCH (d:DyCommLogEntry {loadNum: $loadNum, dock: $dock, trailer: $trailer})
+                CREATE (a:ArchivedDyEntries {
+                    loadNum:      d.loadNum,
+                    trailer:      d.trailer,
+                    scac:         d.scac,
+                    route:        d.route,
+                    dock:         d.dock,
+                    location:     d.location,
+                    deliveryDate: d.deliveryDate,
+                    deliveryTime: d.deliveryTime,
+                    supplier:     d.supplier,
+                    part:         d.part,
+                    pdt:          d.pdt,
+                    createdBy:    d.createdBy
+                })
+                DELETE d
+            ")
+            .param("loadNum", line.lmsAccent.clone())
+            .param("dock",    line.dockCode.clone())
+            .param("trailer", line.trailer1.clone());
+
+            if let Err(e) = graph.run(archive_q).await {
+                eprintln!("Failed to archive DyComm entry ({}/{}/{}): {:?}", line.lmsAccent, line.dockCode, line.trailer1, e);
+            }
+        } else if line.origin == "Exception" {
+            let archive_q = query("
+                MATCH (e:ExceptionLogEntry {loadNum: $loadNum, dock: $dock, trailer1: $trailer1})
+                CREATE (a:ArchivedExceptions {
+                    loadNum:      e.loadNum,
+                    dock:         e.dock,
+                    type:         e.type,
+                    status:       e.status,
+                    route:        e.route,
+                    scac:         e.scac,
+                    trailer1:     e.trailer1,
+                    trailer2:     e.trailer2,
+                    supplier:     e.supplier,
+                    dockSequence: e.dockSequence,
+                    originalDate: e.originalDate,
+                    originalTime: e.originalTime,
+                    newDate:      e.newDate,
+                    newTime:      e.newTime,
+                    newEndDate:   e.newEndDate,
+                    newEndTime:   e.newEndTime,
+                    comment:      e.comment,
+                    requestor:    e.requestor
+                })
+                DELETE e
+            ")
+            .param("loadNum",  line.lmsAccent.clone())
+            .param("dock",     line.dockCode.clone())
+            .param("trailer1", line.trailer1.clone());
+
+            if let Err(e) = graph.run(archive_q).await {
+                eprintln!("Failed to archive Exception entry ({}/{}/{}): {:?}", line.lmsAccent, line.dockCode, line.trailer1, e);
+            }
+        }
+    }
+
     Ok(Json(created_lines))
 }
 
@@ -1064,6 +1132,7 @@ pub async fn update_live_trailer(
                 let node: Node = row.get("t").map_err(|_| Json("Failed to get updated node"))?;
                 let updated = TrailerRecord {
                     uuid:              node.get("uuid").unwrap_or_default(),
+                    origin:            node.get("origin").unwrap_or_default(),
                     hour:              node.get("hour").unwrap_or_default(),
                     dateShift:         node.get("dateShift").unwrap_or_default(),
                     lmsAccent:         node.get("lmsAccent").unwrap_or_default(),
