@@ -866,7 +866,7 @@ pub async fn push_add_on (
                 if let Ok(data) = serde_json::to_string(&created) {
                     let ws_msg = IncomingMessage {
                         r#type: "add_on".to_string(),
-                        data: MessageData { message: data },
+                        data: Some(MessageData { message: data }),
                     };
                     if let Ok(message) = serde_json::to_string(&ws_msg) {
                         let ws_list = state.ws_list.lock().await;
@@ -1164,7 +1164,7 @@ pub async fn update_live_trailer(
                 if let Ok(data) = serde_json::to_value(&updated) {
                     let ws_msg = IncomingMessage {
                         r#type: "trailer_update".to_string(),
-                        data: MessageData { message: data.to_string() },
+                        data: Some(MessageData { message: data.to_string() }),
                     };
                     if let Ok(message) = serde_json::to_string(&ws_msg) {
                             let ws_list = state.ws_list.lock().await;

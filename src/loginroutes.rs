@@ -5,11 +5,12 @@ use neo4rs::{query, Node};
 use bcrypt::{hash, verify, DEFAULT_COST};
 use chrono::{Utc, Duration};
 use jsonwebtoken::{encode, Header, EncodingKey};
+use rocket::http::Status;
 
 
 
 #[post("/login", format = "json", data = "<login_request>")]
-pub async fn login(login_request: Json<LoginRequest>, state: &State<AppState>) -> Result<Json<LoginResponse>, Json<String>> {
+pub async fn login(login_request: Json<LoginRequest>, state: &State<AppState>) -> Result<Json<LoginResponse>, (Status, Json<String>)> {
     let graph = &state.graph;
 
     let query = query("
@@ -18,7 +19,7 @@ pub async fn login(login_request: Json<LoginRequest>, state: &State<AppState>) -
 
     let mut result = match graph.execute(query).await {
         Ok(r) => r,
-        Err(e) => return Err(Json(e.to_string())),
+        Err(e) => return Err((Status::Unauthorized, Json(e.to_string()))),
     };
 
     if let Some(record) = result.next().await.unwrap() {
@@ -30,7 +31,7 @@ pub async fn login(login_request: Json<LoginRequest>, state: &State<AppState>) -
 
         let is_password_valid = match verify(&login_request.password, &stored_password) {
             Ok(valid) => valid,
-            Err(e) => return Err(Json(e.to_string())),
+            Err(e) => return Err((Status::Unauthorized, Json(e.to_string()))),
         };
 
         if is_password_valid {
@@ -50,7 +51,7 @@ pub async fn login(login_request: Json<LoginRequest>, state: &State<AppState>) -
                 &EncodingKey::from_secret(state.jwt_secret.as_ref()),
             ) {
                 Ok(t) => t,
-                Err(e) => return Err(Json(e.to_string())),
+                Err(e) => return Err((Status::Unauthorized, Json(e.to_string()))),
             };
 
             let refresh_token = match encode(
@@ -59,7 +60,7 @@ pub async fn login(login_request: Json<LoginRequest>, state: &State<AppState>) -
                 &EncodingKey::from_secret(state.jwt_secret.as_ref()),
             ) {
                 Ok(t) => t,
-                Err(e) => return Err(Json(e.to_string())),
+                Err(e) => return Err((Status::Unauthorized, Json(e.to_string()))),
             };
 
             let response = LoginResponse {
@@ -72,20 +73,20 @@ pub async fn login(login_request: Json<LoginRequest>, state: &State<AppState>) -
             };
             return Ok(Json(response));
         } else {
-            return Err(Json("Invalid password".to_string()));
+            return Err((Status::Unauthorized, Json("Invalid password".to_string())));
         }
     } else {
-        return Err(Json("User not found".to_string()));
+        return Err((Status::Unauthorized, Json("User not found".to_string())));
     }
 }
 
 #[post("/register", format = "json", data = "<user>")]
-pub async fn register(user: Json<LoginRequest>, state: &State<AppState>) -> Result<Json<&'static str>, String> {
+pub async fn register(user: Json<LoginRequest>, state: &State<AppState>) -> Result<Json<&'static str>, (Status, Json<String>)> {
     let graph = &state.graph;
 
     let hashed_password = match hash(&user.password, DEFAULT_COST) {
         Ok(p) => p,
-        Err(e) => return Err(e.to_string()),
+        Err(e) => return Err((Status::Unauthorized, Json(e.to_string()))),
     };
 
     println!("{} {}", user.username.clone(), hashed_password);
@@ -96,7 +97,7 @@ pub async fn register(user: Json<LoginRequest>, state: &State<AppState>) -> Resu
 
     match graph.run(query).await {
         Ok(_) => Ok(Json("User registered")),
-        Err(e) => Err(format!("Failed to register user: {:?}", e)),
+        Err(e) => Err((Status::Unauthorized, Json(format!("Failed to register user: {:?}", e)))),
     }
 }
 

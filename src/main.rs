@@ -8,6 +8,7 @@ mod loginroutes;
 mod setters;
 mod wsserver;
 mod helpers;
+mod emailer;
 use rocket::data::ToByteUnit;
 use rocket::routes;
 use neo4rs::Graph;
@@ -20,6 +21,7 @@ use getters::*;
 use loginroutes::*;
 use setters::*;
 use wsserver::*;
+use emailer::*;
 
 
 /*
@@ -143,7 +145,8 @@ async fn main() {
             upload_in_transit,
             register,
             upload_lms,
-            push_reschedules
+            push_reschedules,
+            send_email_route
             ])
         .manage(state)
         .launch()

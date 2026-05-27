@@ -23,7 +23,7 @@ impl<'r> FromRequest<'r> for AuthenticatedUser {
     type Error = ();
 
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        let secret = "tO7E8uCjD5rXpQl0FhKwV2yMz4bJnAi9sGeR3kTzXvNmPuLsDq8W"; // Replace with your secret key
+        let secret = "tO7E8uCjD5rXpQl0FhKwV2yMz4bJnAi9sGeR3kTzXvNmPuLsDq8W";
         if let Some(auth_header) = request.headers().get_one("Authorization") {
             if let Some(token) = auth_header.strip_prefix("Bearer ") {
                 match decode_token(token, secret) {

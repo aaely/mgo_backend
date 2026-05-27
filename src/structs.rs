@@ -233,7 +233,7 @@ pub struct RollNextShiftRequest {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IncomingMessage {
     pub r#type: String,
-    pub data: MessageData,
+    pub data: Option<MessageData>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -641,13 +641,26 @@ pub async fn late_trailer_service(graph: Arc<Graph>, ws_list: WebSocketList) {
                         if let Ok(data) = serde_json::to_string(&updated) {
                             let ws_msg = IncomingMessage {
                                 r#type: "trailer_update".to_string(),
-                                data: MessageData { message: data },
+                                data: Some(MessageData { message: data }),
                             };
                             if let Ok(message) = serde_json::to_string(&ws_msg) {
                                 let ws_list = ws_list.lock().await;
                                 for (_, tx) in ws_list.iter() {
                                     let _ = tx.send(Message::Text(message.clone()));
                                 }
+                            }
+                        }
+
+                        // ── Email alert ──
+                        if let Ok(alert_email) = std::env::var("ALERT_EMAIL") {
+                            let subject = format!("Late Trailer - Route {}", updated.routeId);
+                            let body = format!(
+                                "Trailer {} on route {} has been flagged as late.\n\nDock: {}\nSCAC: {}\nScheduled: {} at {}\n",
+                                updated.trailer1, updated.routeId, updated.dockCode,
+                                updated.scac, updated.scheduleStartDate, updated.adjustedStartTime,
+                            );
+                            if let Err(e) = send_email(&alert_email, &subject, body).await {
+                                eprintln!("Failed to send late trailer email: {:?}", e);
                             }
                         }
                     }
@@ -952,6 +965,18 @@ pub async fn part_monitoring_service(
                         } else {
                             alerted_parts.lock().await.insert(part.clone(), now);
                         }
+
+                        if let Ok(alert_email) = std::env::var("ALERT_EMAIL") {
+                            let subject = format!("Part Alert [{}] - {}", level, part);
+                            let body = format!(
+                                "Part Number: {}\nDescription: {}\nSupplier: {}\nDeck: {}\n\nAlert Level: {}\nHours to Outage: {:.1}\nNext ASN ETA: {}\nNext Trailer: {}\nHours Until Rescue: {:.1}\n",
+                                part, asl.desc, asl.supplier, asl.deck,
+                                level, final_hours_to_out, next_asn_display, next_trailer, hours_until_rescue,
+                            );
+                            if let Err(e) = send_email(&alert_email, &subject, body).await {
+                                eprintln!("Failed to send part alert email: {:?}", e);
+                            }
+                        }
                     }
                 }
                 alerts.push(PartAlert {
@@ -1074,6 +1099,18 @@ pub async fn part_monitoring_service(
                                     } else {
                                         alerted_parts.lock().await.insert(part.clone(), now);
                                     }
+
+                                    if let Ok(alert_email) = std::env::var("ALERT_EMAIL") {
+                                        let subject = format!("Part Alert [{}] - {}", level, part);
+                                        let body = format!(
+                                            "Part Number: {}\nDescription: {}\nSupplier: {}\nDeck: {}\n\nAlert Level: {}\nHours to Outage: {:.1}\nNext ASN ETA: {}\nNext Trailer: {}\nHours Until Rescue: {:.1}\n",
+                                            part, asl.desc, asl.supplier, asl.deck,
+                                            level, final_hours_to_out, next_asn_display, next_trailer, hours_until_rescue,
+                                        );
+                                        if let Err(e) = send_email(&alert_email, &subject, body).await {
+                                            eprintln!("Failed to send part alert email: {:?}", e);
+                                        }
+                                    }
                                 }
                             }
 
@@ -1108,7 +1145,7 @@ pub async fn part_monitoring_service(
         if let Ok(data) = serde_json::to_string(&alerts) {
             let ws_msg = IncomingMessage {
                 r#type: "part_alert".to_string(),
-                data:   MessageData { message: data },
+                data:   Some(MessageData { message: data }),
             };
             if let Ok(message) = serde_json::to_string(&ws_msg) {
                 let ws_list = ws_list.lock().await;

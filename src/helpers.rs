@@ -91,6 +91,43 @@ pub fn get_dock(acctor_id: &str, location: &str) -> String {
     format!("{}-{}", acctor_id, location)
 }
 
+pub async fn send_email(to: &str, subject: &str, body: String) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use lettre::{
+        AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
+        message::header::ContentType,
+        transport::smtp::authentication::Credentials,
+    };
+
+    let host = std::env::var("SMTP_HOST").unwrap_or_else(|_| "localhost".to_string());
+    let port: u16 = std::env::var("SMTP_PORT")
+        .unwrap_or_else(|_| "25".to_string())
+        .parse()
+        .unwrap_or(25);
+    let from = std::env::var("EMAIL_FROM").unwrap_or_else(|_| "noreply@localhost".to_string());
+    let user = std::env::var("SMTP_USER").ok();
+    let pass = std::env::var("SMTP_PASS").ok();
+
+    let email = Message::builder()
+        .from(from.parse()?)
+        .to(to.parse()?)
+        .subject(subject)
+        .header(ContentType::TEXT_PLAIN)
+        .body(body)?;
+
+    let mailer = match (user, pass) {
+        (Some(u), Some(p)) => AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)
+            .port(port)
+            .credentials(Credentials::new(u, p))
+            .build(),
+        _ => AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&host)
+            .port(port)
+            .build(),
+    };
+
+    mailer.send(email).await?;
+    Ok(())
+}
+
 pub async fn send_sms(to: &str, body: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let account_sid = std::env::var("TWILIO_ACCOUNT_SID")?;
     let auth_token  = std::env::var("TWILIO_AUTH_TOKEN")?;

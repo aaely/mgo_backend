@@ -61,6 +61,9 @@ async fn handle_connection(
                         match serde_json::from_str::<IncomingMessage>(msg_text) {
                             Ok(incoming_message) => {
                                 match incoming_message.r#type.as_str() {
+                                    "ping" => {
+                                        continue;
+                                    }
                                     "trailer_update" => {
                                         println!("Handling trailer_update: {:?}", incoming_message.data);
                                     }
