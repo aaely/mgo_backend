@@ -714,6 +714,7 @@ pub async fn roll_next_shift(
     let promote_query = query("
         MATCH (s:StagedTrailer)
         CREATE (t:LiveTrailer {
+            editRef:            randomUUID(),
             uuid:               s.uuid,
             hour:               s.hour,
             dateShift:          s.dateShift,
@@ -762,9 +763,11 @@ pub async fn push_add_on (
     role:   Role,
 ) -> Result<Json<TrailerRecord>, Json<&'static str>> {
     let graph = &state.graph;
+    let edit_ref = uuid::Uuid::new_v4().to_string();
 
     let q = query("
         CREATE (t:LiveTrailer {
+            editRef:           $editRef,
             uuid:              $uuid,
             hour:              $hour,
             dateShift:         $dateShift,
@@ -796,6 +799,7 @@ pub async fn push_add_on (
         })
         RETURN t
     ")
+    .param("editRef",           edit_ref)
     .param("uuid",              add_on.uuid.clone())
     .param("hour",              add_on.hour.clone())
     .param("dateShift",         add_on.dateShift.clone())
@@ -860,6 +864,7 @@ pub async fn push_add_on (
                     lateComments:      Some(node.get("lateComments").unwrap_or_default()),
                     gmComments:        Some(node.get("gmComments").unwrap_or_default()),
                     lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
+                    editRef:           node.get("editRef").unwrap_or_default(),
                 };
 
                 // ── Broadcast to WS clients ──
@@ -867,6 +872,8 @@ pub async fn push_add_on (
                     let ws_msg = IncomingMessage {
                         r#type: "add_on".to_string(),
                         data: Some(MessageData { message: data }),
+                        token: None,
+                        refresh_token: None,
                     };
                     if let Ok(message) = serde_json::to_string(&ws_msg) {
                         let ws_list = state.ws_list.lock().await;
@@ -1006,6 +1013,7 @@ pub async fn upload_on_deck(
                     let ryderComments:     String = trailer_node.get("ryderComments").unwrap_or_default();
                     let lateComments:      String = trailer_node.get("lateComments").unwrap_or_default();
                     let gmComments:        String = trailer_node.get("gmComments").unwrap_or_default();
+                    let editRef:           String = trailer_node.get("editRef").unwrap_or_default();
 
                     let trailer = TrailerRecord {
                         uuid,
@@ -1036,7 +1044,8 @@ pub async fn upload_on_deck(
                         ryderComments,
                         lateComments: Some(lateComments),
                         gmComments: Some(gmComments),
-                        lowestDoh: Some(lowestDoh)
+                        lowestDoh: Some(lowestDoh),
+                        editRef,
                     };
                     created_lines.push(trailer);
                 }
@@ -1160,11 +1169,14 @@ pub async fn update_live_trailer(
                     lateComments:      Some(node.get("lateComments").unwrap_or_default()),
                     gmComments:        Some(node.get("gmComments").unwrap_or_default()),
                     lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
+                    editRef:           node.get("editRef").unwrap_or_default(),
                 };
                 if let Ok(data) = serde_json::to_value(&updated) {
                     let ws_msg = IncomingMessage {
                         r#type: "trailer_update".to_string(),
                         data: Some(MessageData { message: data.to_string() }),
+                        token: None,
+                        refresh_token: None,
                     };
                     if let Ok(message) = serde_json::to_string(&ws_msg) {
                             let ws_list = state.ws_list.lock().await;

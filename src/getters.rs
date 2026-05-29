@@ -495,6 +495,7 @@ pub async fn get_past_shift(
                     lateComments:      Some(node.get("lateComments").unwrap_or_default()),
                     gmComments:        Some(node.get("gmComments").unwrap_or_default()),
                     lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
+                    editRef:           node.get("editRef").unwrap_or_default(),
                 });
             }
             if role.0.contains("univ") {
@@ -557,6 +558,7 @@ pub async fn get_live_trailers(
                     lateComments:      Some(node.get("lateComments").unwrap_or_default()),
                     gmComments:        Some(node.get("gmComments").unwrap_or_default()),
                     lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
+                    editRef:           node.get("editRef").unwrap_or_default(),
                 });
             }
             if role.0.contains("univ") {
@@ -623,6 +625,7 @@ pub async fn get_staged_trailers(
                     lateComments:      Some(node.get("lateComments").unwrap_or_default()),
                     gmComments:        Some(node.get("gmComments").unwrap_or_default()),
                     lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
+                    editRef:           node.get("editRef").unwrap_or_default(),
                 });
             }
             if role.0.contains("univ") {

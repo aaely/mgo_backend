@@ -7,81 +7,87 @@ use chrono::{Utc, Duration};
 use jsonwebtoken::{encode, Header, EncodingKey};
 use rocket::http::Status;
 
+pub fn issue_access_token(username: &str, role: &str, secret: &str) -> Result<String, jsonwebtoken::errors::Error> {
+    let exp = Utc::now()
+        .checked_add_signed(Duration::seconds(65))
+        .expect("valid timestamp")
+        .timestamp() as usize;
+    encode(
+        &Header::default(),
+        &Claims { username: username.to_string(), role: role.to_string(), exp },
+        &EncodingKey::from_secret(secret.as_ref()),
+    )
+}
 
+pub async fn store_refresh_token(
+    graph: &neo4rs::Graph,
+    token: &str,
+    username: &str,
+    role: &str,
+) -> Result<(), neo4rs::Error> {
+    let expires_at = Utc::now()
+        .checked_add_signed(Duration::days(7))
+        .expect("valid timestamp")
+        .timestamp();
+    graph.run(
+        query("CREATE (r:RefreshToken {token: $token, username: $username, role: $role, expires_at: $expires_at})")
+            .param("token",      token)
+            .param("username",   username)
+            .param("role",       role)
+            .param("expires_at", expires_at),
+    ).await
+}
 
 #[post("/login", format = "json", data = "<login_request>")]
-pub async fn login(login_request: Json<LoginRequest>, state: &State<AppState>) -> Result<Json<LoginResponse>, (Status, Json<String>)> {
+pub async fn login(
+    login_request: Json<LoginRequest>,
+    state: &State<AppState>,
+) -> Result<Json<LoginResponse>, (Status, Json<String>)> {
     let graph = &state.graph;
 
-    let query = query("
-        MATCH (u:User {name: $username}) RETURN u
-    ").param("username", login_request.username.clone());
-
-    let mut result = match graph.execute(query).await {
+    let mut result = match graph.execute(
+        query("MATCH (u:User {name: $username}) RETURN u")
+            .param("username", login_request.username.clone()),
+    ).await {
         Ok(r) => r,
         Err(e) => return Err((Status::Unauthorized, Json(e.to_string()))),
     };
 
-    if let Some(record) = result.next().await.unwrap() {
-        let user_node: Node = record.get("u").unwrap();
+    let record = match result.next().await.unwrap() {
+        Some(r) => r,
+        None => return Err((Status::Unauthorized, Json("User not found".to_string()))),
+    };
 
-        let stored_password: String = user_node.get::<String>("password").unwrap().to_string();
-        let username: String = user_node.get::<String>("name").unwrap().to_string();
-        let role: String = user_node.get::<String>("role").unwrap().to_string();
+    let user_node: Node = record.get("u").unwrap();
+    let stored_password: String = user_node.get("password").unwrap();
+    let username: String = user_node.get("name").unwrap();
+    let role: String = user_node.get("role").unwrap();
 
-        let is_password_valid = match verify(&login_request.password, &stored_password) {
-            Ok(valid) => valid,
-            Err(e) => return Err((Status::Unauthorized, Json(e.to_string()))),
-        };
-
-        if is_password_valid {
-            let access_expiration = Utc::now()
-                .checked_add_signed(Duration::seconds(3600))
-                .expect("valid timestamp")
-                .timestamp() as usize;
-
-            let refresh_expiration = Utc::now()
-                .checked_add_signed(Duration::days(1))
-                .expect("valid timestamp")
-                .timestamp() as usize;
-
-            let access_token = match encode(
-                &Header::default(),
-                &Claims { username: username.clone(), role: role.clone(), exp: access_expiration },
-                &EncodingKey::from_secret(state.jwt_secret.as_ref()),
-            ) {
-                Ok(t) => t,
-                Err(e) => return Err((Status::Unauthorized, Json(e.to_string()))),
-            };
-
-            let refresh_token = match encode(
-                &Header::default(),
-                &Claims { username: username.clone(), role: role.clone(), exp: refresh_expiration },
-                &EncodingKey::from_secret(state.jwt_secret.as_ref()),
-            ) {
-                Ok(t) => t,
-                Err(e) => return Err((Status::Unauthorized, Json(e.to_string()))),
-            };
-
-            let response = LoginResponse {
-                token: access_token,
-                refresh_token: Some(refresh_token),
-                user: UserResponse {
-                    username,
-                    role,
-                },
-            };
-            return Ok(Json(response));
-        } else {
-            return Err((Status::Unauthorized, Json("Invalid password".to_string())));
-        }
-    } else {
-        return Err((Status::Unauthorized, Json("User not found".to_string())));
+    match verify(&login_request.password, &stored_password) {
+        Ok(true) => {}
+        Ok(false) => return Err((Status::Unauthorized, Json("Invalid password".to_string()))),
+        Err(e) => return Err((Status::Unauthorized, Json(e.to_string()))),
     }
+
+    let access_token = issue_access_token(&username, &role, &state.jwt_secret)
+        .map_err(|e| (Status::InternalServerError, Json(e.to_string())))?;
+
+    let refresh_token = uuid::Uuid::new_v4().to_string();
+    store_refresh_token(graph, &refresh_token, &username, &role).await
+        .map_err(|e| (Status::InternalServerError, Json(format!("Failed to store refresh token: {e}"))))?;
+
+    Ok(Json(LoginResponse {
+        token: access_token,
+        refresh_token: Some(refresh_token),
+        user: UserResponse { username, role },
+    }))
 }
 
 #[post("/register", format = "json", data = "<user>")]
-pub async fn register(user: Json<LoginRequest>, state: &State<AppState>) -> Result<Json<&'static str>, (Status, Json<String>)> {
+pub async fn register(
+    user: Json<LoginRequest>,
+    state: &State<AppState>,
+) -> Result<Json<&'static str>, (Status, Json<String>)> {
     let graph = &state.graph;
 
     let hashed_password = match hash(&user.password, DEFAULT_COST) {
@@ -91,49 +97,72 @@ pub async fn register(user: Json<LoginRequest>, state: &State<AppState>) -> Resu
 
     println!("{} {}", user.username.clone(), hashed_password);
 
-    let query = query("CREATE (u:User {name: $username, password: $password, role: 'read'})")
+    let q = query("CREATE (u:User {name: $username, password: $password, role: 'read'})")
         .param("username", user.username.clone())
         .param("password", hashed_password);
 
-    match graph.run(query).await {
+    match graph.run(q).await {
         Ok(_) => Ok(Json("User registered")),
         Err(e) => Err((Status::Unauthorized, Json(format!("Failed to register user: {:?}", e)))),
     }
 }
 
-#[post("/refresh", format = "json", data = "<refresh_request>")]
-pub async fn refresh_token(refresh_request: Json<RefreshRequest>, state: &State<AppState>) -> Result<Json<LoginResponse>, Json<String>> {
-    let claims = match decode_token(&refresh_request.refresh_token, &state.jwt_secret) {
-        Ok(claims) => claims,
-        Err(_) => return Err(Json("Invalid refresh token".to_string())),
-    };
+#[post("/refresh", format = "json", data = "<req>")]
+pub async fn refresh_token(
+    req: Json<RefreshRequest>,
+    state: &State<AppState>,
+) -> Result<Json<LoginResponse>, Json<String>> {
+    let graph = &state.graph;
+    let now = Utc::now().timestamp();
 
-    let new_expiration = Utc::now()
-        .checked_add_signed(Duration::seconds(3600))
-        .expect("valid timestamp")
-        .timestamp() as usize;
-
-    let new_token = match encode(
-        &Header::default(),
-        &Claims {
-            username: claims.username.clone(),
-            role: claims.role.clone(),
-            exp: new_expiration,
-        },
-        &EncodingKey::from_secret(state.jwt_secret.as_ref()),
-    ) {
-        Ok(t) => t,
+    // Consume the token (delete on read = rotation)
+    let mut result = match graph.execute(
+        query("
+            MATCH (r:RefreshToken {token: $token})
+            WHERE r.expires_at > $now
+            WITH r.username AS username, r.role AS role
+            DELETE r
+            RETURN username, role
+        ")
+        .param("token", req.refresh_token.clone())
+        .param("now",   now),
+    ).await {
+        Ok(r) => r,
         Err(e) => return Err(Json(e.to_string())),
     };
 
-    let response = LoginResponse {
-        token: new_token,
-        refresh_token: None,  // Do not issue a new refresh token
-        user: UserResponse {
-            username: claims.username,
-            role: claims.role,
-        },
+    let row = match result.next().await {
+        Ok(Some(r)) => r,
+        _ => return Err(Json("Invalid or expired refresh token".to_string())),
     };
 
-    Ok(Json(response))
+    let username: String = row.get("username").map_err(|e| Json(e.to_string()))?;
+    let role: String    = row.get("role").map_err(|e| Json(e.to_string()))?;
+
+    let access_token = issue_access_token(&username, &role, &state.jwt_secret)
+        .map_err(|e| Json(e.to_string()))?;
+
+    let new_refresh_token = uuid::Uuid::new_v4().to_string();
+    store_refresh_token(graph, &new_refresh_token, &username, &role).await
+        .map_err(|e| Json(format!("Failed to store refresh token: {e}")))?;
+
+    Ok(Json(LoginResponse {
+        token: access_token,
+        refresh_token: Some(new_refresh_token),
+        user: UserResponse { username, role },
+    }))
+}
+
+#[post("/logout", format = "json", data = "<req>")]
+pub async fn logout(
+    req: Json<RefreshRequest>,
+    state: &State<AppState>,
+) -> Result<Json<&'static str>, Json<&'static str>> {
+    match state.graph.run(
+        query("MATCH (r:RefreshToken {token: $token}) DELETE r")
+            .param("token", req.refresh_token.clone()),
+    ).await {
+        Ok(_) => Ok(Json("Logged out")),
+        Err(_) => Err(Json("Logout failed")),
+    }
 }

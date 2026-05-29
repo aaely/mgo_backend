@@ -1,56 +1,111 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 use futures_util::{StreamExt, SinkExt};
 use rocket::{get, State};
-use tokio::net::TcpListener;
-use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
-use crate::structs::{AppState, IncomingMessage, WebSocketList};
+use tokio::net::{TcpListener, TcpStream};
+use tokio_tungstenite::{
+    accept_hdr_async, WebSocketStream,
+    tungstenite::{
+        protocol::Message,
+        http::StatusCode,
+        handshake::server::{Request as WsRequest, Response as WsResponse},
+    },
+};
+use neo4rs::{Graph, query};
+use crate::auth::decode_token;
+use crate::loginroutes::{issue_access_token, store_refresh_token};
+use crate::structs::{AppState, IncomingMessage, MessageData, WebSocketList};
 
 #[get("/ws")]
 pub async fn ws_handler(state: &State<AppState>) -> Result<(), rocket::http::Status> {
-    let ws_list = state.ws_list.clone();
+    let ws_list    = state.ws_list.clone();
+    let jwt_secret = state.jwt_secret.clone();
+    let graph      = state.graph.clone();
     tokio::spawn(async move {
-        if let Err(e) = run_ws_server(ws_list).await {
+        if let Err(e) = run_ws_server(ws_list, jwt_secret, graph).await {
             println!("Error in WebSocket server: {}", e);
         }
     });
-
     Ok(())
 }
 
-pub async fn run_ws_server(ws_list: WebSocketList) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_ws_server(
+    ws_list: WebSocketList,
+    jwt_secret: String,
+    graph: Arc<Graph>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind("0.0.0.0:9001").await?;
     println!("WebSocket server listening on ws://0.0.0.0:9001");
 
     while let Ok((stream, _)) = listener.accept().await {
         let peer_addr = stream.peer_addr().expect("connected streams should have a peer address");
-        println!("Accepted connection from {}", peer_addr);
-        let ws_list_inner = ws_list.clone();
-        tokio::spawn(handle_connection(stream, peer_addr, ws_list_inner));
+        let secret = jwt_secret.clone();
+
+        let ws_stream = match accept_hdr_async(stream, move |req: &WsRequest, res: WsResponse| {
+            let token = req.uri().query().and_then(|q| {
+                q.split('&').find_map(|pair| {
+                    let (k, v) = pair.split_once('=')?;
+                    if k == "token" { Some(v.to_string()) } else { None }
+                })
+            });
+            match token.filter(|t| decode_token(t, &secret).is_ok()) {
+                Some(_) => Ok(res),
+                None => {
+                    let err = tokio_tungstenite::tungstenite::http::Response::builder()
+                        .status(StatusCode::UNAUTHORIZED)
+                        .body(None)
+                        .unwrap();
+                    Err(err)
+                }
+            }
+        }).await {
+            Ok(ws) => ws,
+            Err(e) => {
+                println!("Connection from {} rejected: {:?}", peer_addr, e);
+                continue;
+            }
+        };
+
+        println!("WebSocket connection accepted from {}", peer_addr);
+        tokio::spawn(handle_connection(
+            ws_stream,
+            peer_addr,
+            ws_list.clone(),
+            jwt_secret.clone(),
+            graph.clone(),
+        ));
     }
 
     Ok(())
 }
 
+async fn send_to_peer(ws_list: &WebSocketList, peer_addr: SocketAddr, msg: IncomingMessage) {
+    if let Ok(text) = serde_json::to_string(&msg) {
+        let list = ws_list.lock().await;
+        if let Some(sender) = list.get(&peer_addr) {
+            let _ = sender.send(Message::Text(text));
+        }
+    }
+}
+
 async fn handle_connection(
-    stream: tokio::net::TcpStream,
+    ws_stream: WebSocketStream<TcpStream>,
     peer_addr: SocketAddr,
     ws_list: WebSocketList,
+    jwt_secret: String,
+    graph: Arc<Graph>,
 ) {
-    let ws_stream = accept_async(stream).await.expect("Error during the websocket handshake occurred");
-    println!("WebSocket handshake successful with {}", peer_addr);
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
     {
-        let mut ws_list = ws_list.lock().await;
-        ws_list.insert(peer_addr, tx);
-        println!("Added {} to WebSocket list. Total clients: {}", peer_addr, ws_list.len());
+        let mut list = ws_list.lock().await;
+        list.insert(peer_addr, tx);
+        println!("Added {} to WebSocket list. Total clients: {}", peer_addr, list.len());
     }
 
-    // Clone ws_list for the incoming messages task
-    let ws_list_for_incoming = ws_list.clone();
-    // Task to handle incoming messages from the WebSocket connection
+    let ws_list_incoming = ws_list.clone();
     tokio::spawn(async move {
         while let Some(message) = ws_receiver.next().await {
             match message {
@@ -62,16 +117,48 @@ async fn handle_connection(
                             Ok(incoming_message) => {
                                 match incoming_message.r#type.as_str() {
                                     "ping" => {
+                                        if let Some(token) = &incoming_message.token {
+                                            if decode_token(token, &jwt_secret).is_err() {
+                                                let refreshed = try_refresh(
+                                                    &graph,
+                                                    &jwt_secret,
+                                                    incoming_message.refresh_token.as_deref(),
+                                                ).await;
+
+                                                match refreshed {
+                                                    Some((new_jwt, new_rt)) => {
+                                                        let payload = serde_json::json!({
+                                                            "token": new_jwt,
+                                                            "refresh_token": new_rt,
+                                                        });
+                                                        send_to_peer(&ws_list_incoming, peer_addr, IncomingMessage {
+                                                            r#type: "token_refreshed".to_string(),
+                                                            data: Some(MessageData { message: payload.to_string() }),
+                                                            token: None,
+                                                            refresh_token: None,
+                                                        }).await;
+                                                    }
+                                                    None => {
+                                                        send_to_peer(&ws_list_incoming, peer_addr, IncomingMessage {
+                                                            r#type: "force_logout".to_string(),
+                                                            data: None,
+                                                            token: None,
+                                                            refresh_token: None,
+                                                        }).await;
+                                                    }
+                                                }
+                                            }
+                                        }
                                         continue;
                                     }
                                     "trailer_update" => {
                                         println!("Handling trailer_update: {:?}", incoming_message.data);
                                     }
                                     "add_on" => {
-                                        println!("Handling schedule_trailer: {:?}", incoming_message.data);
+                                        println!("Handling add_on: {:?}", incoming_message.data);
                                     }
                                     "part_alert" => {
-                                        println!("Handling schedule_trailer: {:?}", incoming_message.data);
+                                        println!("Handling part_alert: {:?}", incoming_message.data);
                                     }
                                     "multi_trailer_update" => {
                                         println!("Handling multi_trailer_update: {:?}", incoming_message.data);
@@ -81,15 +168,12 @@ async fn handle_connection(
                                     }
                                 }
 
-                                // Broadcast the message to all connected clients
                                 let response = Message::Text(serde_json::to_string(&incoming_message).unwrap());
-                                let ws_list = ws_list_for_incoming.lock().await;
-                                println!("Broadcasting message to {} clients", ws_list.len());
-                                for sender in ws_list.values() {
+                                let list = ws_list_incoming.lock().await;
+                                println!("Broadcasting message to {} clients", list.len());
+                                for sender in list.values() {
                                     if sender.send(response.clone()).is_err() {
                                         println!("Failed to send message to {}", peer_addr);
-                                    } else {
-                                        println!("Message sent to client {}", peer_addr);
                                     }
                                 }
                             }
@@ -110,26 +194,52 @@ async fn handle_connection(
                 }
             }
         }
-        let mut ws_list = ws_list_for_incoming.lock().await;
-        ws_list.remove(&peer_addr);
-        println!("Client {} removed. Total clients: {}", peer_addr, ws_list.len());
+        let mut list = ws_list_incoming.lock().await;
+        list.remove(&peer_addr);
+        println!("Client {} removed. Total clients: {}", peer_addr, list.len());
     });
 
-    // Clone ws_list for the outgoing messages task
-    let ws_list_for_outgoing = ws_list.clone();
-    // Task to handle outgoing messages to the WebSocket connection
+    let ws_list_outgoing = ws_list.clone();
     tokio::spawn(async move {
         while let Some(message) = rx.recv().await {
-            println!("Sending outgoing message to {}", peer_addr);
             if ws_sender.send(message).await.is_err() {
                 println!("Failed to send outgoing message to {}", peer_addr);
                 break;
             }
         }
-
-        // Clean up the WebSocket list after the connection is closed
-        let mut ws_list = ws_list_for_outgoing.lock().await;
-        ws_list.remove(&peer_addr);
-        println!("Client {} disconnected. Total clients: {}", peer_addr, ws_list.len());
+        let mut list = ws_list_outgoing.lock().await;
+        list.remove(&peer_addr);
+        println!("Client {} disconnected. Total clients: {}", peer_addr, list.len());
     });
+}
+
+async fn try_refresh(
+    graph: &Arc<Graph>,
+    jwt_secret: &str,
+    refresh_token: Option<&str>,
+) -> Option<(String, String)> {
+    let rt = refresh_token?;
+    let now = chrono::Utc::now().timestamp();
+
+    let mut result = graph.execute(
+        query("
+            MATCH (r:RefreshToken {token: $token})
+            WHERE r.expires_at > $now
+            WITH r.username AS username, r.role AS role
+            DELETE r
+            RETURN username, role
+        ")
+        .param("token", rt)
+        .param("now", now),
+    ).await.ok()?;
+
+    let row = result.next().await.ok()??;
+    let username: String = row.get("username").ok()?;
+    let role: String     = row.get("role").ok()?;
+
+    let new_jwt = issue_access_token(&username, &role, jwt_secret).ok()?;
+    let new_rt  = uuid::Uuid::new_v4().to_string();
+    store_refresh_token(graph, &new_rt, &username, &role).await.ok()?;
+
+    Some((new_jwt, new_rt))
 }

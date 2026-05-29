@@ -73,10 +73,12 @@ async fn main() {
             let state = rocket.state::<AppState>().unwrap();
             let ws_list = state.ws_list.clone();
             let graph = state.graph.clone();
+            let jwt_secret  = state.jwt_secret.clone();
+            let ws_graph    = state.graph.clone();
 
             // WebSocket server
             tokio::spawn(async move {
-                if let Err(e) = run_ws_server(ws_list.clone()).await {
+                if let Err(e) = run_ws_server(ws_list.clone(), jwt_secret, ws_graph).await {
                     println!("Error in WebSocket server: {}", e);
                 }
             });
@@ -146,7 +148,8 @@ async fn main() {
             register,
             upload_lms,
             push_reschedules,
-            send_email_route
+            send_email_route,
+            logout
             ])
         .manage(state)
         .launch()
