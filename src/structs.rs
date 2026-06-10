@@ -97,9 +97,7 @@ pub struct LoginRequest {
 
 #[derive(Serialize)]
 pub struct LoginResponse {
-    pub token: String,
     pub user: UserResponse,
-    pub refresh_token: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -221,10 +219,6 @@ pub struct DeliveryRequest {
     pub trailer_id: String
 }
 
-#[derive(Deserialize)]
-pub struct RefreshRequest {
-    pub refresh_token: String,
-}
 
 #[derive(Deserialize, Serialize)]
 pub struct RollNextShiftRequest {
@@ -235,10 +229,6 @@ pub struct RollNextShiftRequest {
 pub struct IncomingMessage {
     pub r#type: String,
     pub data: Option<MessageData>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub token: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub refresh_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -251,6 +241,8 @@ pub struct AppState {
     pub jwt_secret: String,
     pub ws_list: WebSocketList,
     pub alerted_parts: Arc<Mutex<HashMap<String, chrono::DateTime<chrono::Local>>>>,
+    // username → { editRef → trailer_uuid }
+    pub edit_refs: Arc<Mutex<HashMap<String, HashMap<String, String>>>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -559,18 +551,13 @@ pub fn build_update_query(role: &str, trailer: &TrailerRecord) -> neo4rs::Query 
     if is_admin || allowed.contains(&"gmComments")        { sets.push("t.gmComments = $gmComments") }
     if is_admin || allowed.contains(&"lateComments")      { sets.push("t.lateComments = $lateComments") }
 
-    let set_clause = if sets.is_empty() {
-        "t.editRef = randomUUID()".to_string()
-    } else {
-        format!("{}, t.editRef = randomUUID()", sets.join(", "))
-    };
     let cypher = format!(
-        "MATCH (t:LiveTrailer {{editRef: $editRef}}) SET {} RETURN t",
-        set_clause
+        "MATCH (t:LiveTrailer {{uuid: $uuid}}) SET {} RETURN t",
+        sets.join(", ")
     );
 
     query(&cypher)
-        .param("editRef",           trailer.editRef.clone())
+        .param("uuid",              trailer.uuid.clone())
         .param("hour",              trailer.hour.clone())
         .param("dockCode",          trailer.dockCode.clone())
         .param("scac",              trailer.scac.clone())
@@ -645,7 +632,7 @@ pub async fn late_trailer_service(graph: Arc<Graph>, ws_list: WebSocketList) {
                             lateComments:      Some(node.get("lateComments").unwrap_or_default()),
                             gmComments:        Some(node.get("gmComments").unwrap_or_default()),
                             lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
-                            editRef:           node.get("editRef").unwrap_or_default(),
+                            editRef:           String::new(),
                         };
 
                         // ── Broadcast to WS clients ──
@@ -653,8 +640,6 @@ pub async fn late_trailer_service(graph: Arc<Graph>, ws_list: WebSocketList) {
                             let ws_msg = IncomingMessage {
                                 r#type: "trailer_update".to_string(),
                                 data: Some(MessageData { message: data }),
-                                token: None,
-                                refresh_token: None,
                             };
                             if let Ok(message) = serde_json::to_string(&ws_msg) {
                                 let ws_list = ws_list.lock().await;
@@ -1159,8 +1144,6 @@ pub async fn part_monitoring_service(
             let ws_msg = IncomingMessage {
                 r#type: "part_alert".to_string(),
                 data:   Some(MessageData { message: data }),
-                token: None,
-                refresh_token: None,
             };
             if let Ok(message) = serde_json::to_string(&ws_msg) {
                 let ws_list = ws_list.lock().await;

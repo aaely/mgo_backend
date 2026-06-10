@@ -1,6 +1,7 @@
 use crate::structs::*;
-use crate::auth::{decode_token, Claims};
+use crate::auth::Claims;
 use rocket::{post, serde::json::Json, State};
+use rocket::http::{Cookie, CookieJar, SameSite};
 use neo4rs::{query, Node};
 use bcrypt::{hash, verify, DEFAULT_COST};
 use chrono::{Utc, Duration};
@@ -9,7 +10,7 @@ use rocket::http::Status;
 
 pub fn issue_access_token(username: &str, role: &str, secret: &str) -> Result<String, jsonwebtoken::errors::Error> {
     let exp = Utc::now()
-        .checked_add_signed(Duration::seconds(65))
+        .checked_add_signed(Duration::seconds(3600))
         .expect("valid timestamp")
         .timestamp() as usize;
     encode(
@@ -38,8 +39,17 @@ pub async fn store_refresh_token(
     ).await
 }
 
+fn make_cookie(name: &'static str, value: String) -> Cookie<'static> {
+    let mut c = Cookie::new(name, value);
+    c.set_http_only(true);
+    c.set_same_site(SameSite::Lax);
+    c.set_path("/");
+    c
+}
+
 #[post("/login", format = "json", data = "<login_request>")]
 pub async fn login(
+    jar: &CookieJar<'_>,
     login_request: Json<LoginRequest>,
     state: &State<AppState>,
 ) -> Result<Json<LoginResponse>, (Status, Json<String>)> {
@@ -76,9 +86,10 @@ pub async fn login(
     store_refresh_token(graph, &refresh_token, &username, &role).await
         .map_err(|e| (Status::InternalServerError, Json(format!("Failed to store refresh token: {e}"))))?;
 
+    jar.add(make_cookie("access_token", access_token));
+    jar.add(make_cookie("refresh_token", refresh_token));
+
     Ok(Json(LoginResponse {
-        token: access_token,
-        refresh_token: Some(refresh_token),
         user: UserResponse { username, role },
     }))
 }
@@ -107,24 +118,28 @@ pub async fn register(
     }
 }
 
-#[post("/refresh", format = "json", data = "<req>")]
+#[post("/refresh")]
 pub async fn refresh_token(
-    req: Json<RefreshRequest>,
+    jar: &CookieJar<'_>,
     state: &State<AppState>,
 ) -> Result<Json<LoginResponse>, Json<String>> {
+    let rt = jar.get("refresh_token")
+        .ok_or_else(|| Json("No refresh token cookie".to_string()))?
+        .value()
+        .to_string();
+
     let graph = &state.graph;
     let now = Utc::now().timestamp();
 
-    // Consume the token (delete on read = rotation)
     let mut result = match graph.execute(
         query("
             MATCH (r:RefreshToken {token: $token})
             WHERE r.expires_at > $now
-            WITH r.username AS username, r.role AS role
+            WITH r, r.username AS username, r.role AS role
             DELETE r
             RETURN username, role
         ")
-        .param("token", req.refresh_token.clone())
+        .param("token", rt)
         .param("now",   now),
     ).await {
         Ok(r) => r,
@@ -146,23 +161,46 @@ pub async fn refresh_token(
     store_refresh_token(graph, &new_refresh_token, &username, &role).await
         .map_err(|e| Json(format!("Failed to store refresh token: {e}")))?;
 
+    jar.add(make_cookie("access_token", access_token));
+    jar.add(make_cookie("refresh_token", new_refresh_token));
+
     Ok(Json(LoginResponse {
-        token: access_token,
-        refresh_token: Some(new_refresh_token),
         user: UserResponse { username, role },
     }))
 }
 
-#[post("/logout", format = "json", data = "<req>")]
+#[post("/logout")]
 pub async fn logout(
-    req: Json<RefreshRequest>,
+    jar: &CookieJar<'_>,
     state: &State<AppState>,
 ) -> Result<Json<&'static str>, Json<&'static str>> {
-    match state.graph.run(
-        query("MATCH (r:RefreshToken {token: $token}) DELETE r")
-            .param("token", req.refresh_token.clone()),
-    ).await {
-        Ok(_) => Ok(Json("Logged out")),
-        Err(_) => Err(Json("Logout failed")),
+    if let Some(rt_cookie) = jar.get("refresh_token") {
+        let rt = rt_cookie.value().to_string();
+
+        let mut result = state.graph.execute(
+            query("
+                MATCH (r:RefreshToken {token: $token})
+                WITH r, r.username AS username
+                DELETE r
+                RETURN username
+            ")
+            .param("token", rt),
+        ).await.map_err(|_| Json("Logout failed"))?;
+
+        if let Ok(Some(row)) = result.next().await {
+            if let Ok(username) = row.get::<String>("username") {
+                state.edit_refs.lock().await.remove(&username);
+            }
+        }
     }
+
+    let mut ac = Cookie::new("access_token", "");
+    ac.set_path("/");
+    jar.remove(ac);
+
+    let mut rc = Cookie::new("refresh_token", "");
+    rc.set_path("/");
+    jar.remove(rc);
+
+    Ok(Json("Logged out"))
 }

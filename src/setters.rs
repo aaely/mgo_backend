@@ -4,6 +4,7 @@ use crate::role::Role;
 use tokio_tungstenite::tungstenite::Message;
 use rocket::{State, delete, post, serde::json::Json};
 use neo4rs::{query, Node};
+use std::collections::HashMap;
 
 #[post("/api/update_io", format = "json", data = "<update_io>")]
 pub async fn update_io(
@@ -714,7 +715,6 @@ pub async fn roll_next_shift(
     let promote_query = query("
         MATCH (s:StagedTrailer)
         CREATE (t:LiveTrailer {
-            editRef:            randomUUID(),
             uuid:               s.uuid,
             hour:               s.hour,
             dateShift:          s.dateShift,
@@ -759,15 +759,13 @@ pub async fn roll_next_shift(
 pub async fn push_add_on (
     add_on: Json<TrailerRecord>,
     state:  &State<AppState>,
-    _user:  AuthenticatedUser,
+    user:   AuthenticatedUser,
     role:   Role,
 ) -> Result<Json<TrailerRecord>, Json<&'static str>> {
     let graph = &state.graph;
-    let edit_ref = uuid::Uuid::new_v4().to_string();
 
     let q = query("
         CREATE (t:LiveTrailer {
-            editRef:           $editRef,
             uuid:              $uuid,
             hour:              $hour,
             dateShift:         $dateShift,
@@ -799,7 +797,6 @@ pub async fn push_add_on (
         })
         RETURN t
     ")
-    .param("editRef",           edit_ref)
     .param("uuid",              add_on.uuid.clone())
     .param("hour",              add_on.hour.clone())
     .param("dateShift",         add_on.dateShift.clone())
@@ -864,16 +861,14 @@ pub async fn push_add_on (
                     lateComments:      Some(node.get("lateComments").unwrap_or_default()),
                     gmComments:        Some(node.get("gmComments").unwrap_or_default()),
                     lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
-                    editRef:           node.get("editRef").unwrap_or_default(),
+                    editRef:           String::new(),
                 };
 
-                // ── Broadcast to WS clients ──
+                // ── Broadcast without editRef (editRefs are per-user, not shared) ──
                 if let Ok(data) = serde_json::to_string(&created) {
                     let ws_msg = IncomingMessage {
                         r#type: "add_on".to_string(),
                         data: Some(MessageData { message: data }),
-                        token: None,
-                        refresh_token: None,
                     };
                     if let Ok(message) = serde_json::to_string(&ws_msg) {
                         let ws_list = state.ws_list.lock().await;
@@ -883,7 +878,17 @@ pub async fn push_add_on (
                     }
                 }
 
-                Ok(Json(created))
+                // ── Issue an editRef for the creator so they can update immediately ──
+                let creator_edit_ref = uuid::Uuid::new_v4().to_string();
+                {
+                    let mut edit_refs = state.edit_refs.lock().await;
+                    edit_refs
+                        .entry(user.0.username.clone())
+                        .or_insert_with(HashMap::new)
+                        .insert(creator_edit_ref.clone(), created.uuid.clone());
+                }
+
+                Ok(Json(TrailerRecord { editRef: creator_edit_ref, ..created }))
             } else {
                 Err(Json("Failed to create add on"))
             }
@@ -1128,12 +1133,25 @@ pub async fn upload_on_deck(
 pub async fn update_live_trailer(
     trailer_info: Json<TrailerRecord>,
     state: &State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     role: Role,
 ) -> Result<Json<TrailerRecord>, Json<&'static str>> {
     let graph = &state.graph;
 
-    let update_query = build_update_query(&role.0, &trailer_info);
+    // Resolve editRef → real uuid from the per-user session map
+    let user_edit_ref = trailer_info.editRef.clone();
+    let uuid = {
+        let edit_refs = state.edit_refs.lock().await;
+        edit_refs
+            .get(&user.0.username)
+            .and_then(|m| m.get(&user_edit_ref))
+            .cloned()
+    }.ok_or(Json("Invalid edit reference"))?;
+
+    let mut trailer = trailer_info.into_inner();
+    trailer.uuid = uuid;
+
+    let update_query = build_update_query(&role.0, &trailer);
 
     match graph.execute(update_query).await {
         Ok(mut result) => {
@@ -1169,23 +1187,23 @@ pub async fn update_live_trailer(
                     lateComments:      Some(node.get("lateComments").unwrap_or_default()),
                     gmComments:        Some(node.get("gmComments").unwrap_or_default()),
                     lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
-                    editRef:           node.get("editRef").unwrap_or_default(),
+                    editRef:           String::new(),
                 };
+                // ── Broadcast without editRef (per-user, not shareable) ──
                 if let Ok(data) = serde_json::to_value(&updated) {
                     let ws_msg = IncomingMessage {
                         r#type: "trailer_update".to_string(),
                         data: Some(MessageData { message: data.to_string() }),
-                        token: None,
-                        refresh_token: None,
                     };
                     if let Ok(message) = serde_json::to_string(&ws_msg) {
-                            let ws_list = state.ws_list.lock().await;
-                            for (_, tx) in ws_list.iter() {
-                                let _ = tx.send(Message::Text(message.clone()));
-                            }
+                        let ws_list = state.ws_list.lock().await;
+                        for (_, tx) in ws_list.iter() {
+                            let _ = tx.send(Message::Text(message.clone()));
                         }
+                    }
                 }
-                Ok(Json(updated))
+                // ── Echo the caller's editRef back so their local state stays valid ──
+                Ok(Json(TrailerRecord { editRef: user_edit_ref, ..updated }))
             } else {
                 Err(Json("Trailer not found"))
             }

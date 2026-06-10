@@ -11,10 +11,9 @@ use tokio_tungstenite::{
         handshake::server::{Request as WsRequest, Response as WsResponse},
     },
 };
-use neo4rs::{Graph, query};
+use neo4rs::Graph;
 use crate::auth::decode_token;
-use crate::loginroutes::{issue_access_token, store_refresh_token};
-use crate::structs::{AppState, IncomingMessage, MessageData, WebSocketList};
+use crate::structs::{AppState, IncomingMessage, WebSocketList};
 
 #[get("/ws")]
 pub async fn ws_handler(state: &State<AppState>) -> Result<(), rocket::http::Status> {
@@ -42,12 +41,16 @@ pub async fn run_ws_server(
         let secret = jwt_secret.clone();
 
         let ws_stream = match accept_hdr_async(stream, move |req: &WsRequest, res: WsResponse| {
-            let token = req.uri().query().and_then(|q| {
-                q.split('&').find_map(|pair| {
-                    let (k, v) = pair.split_once('=')?;
-                    if k == "token" { Some(v.to_string()) } else { None }
-                })
-            });
+            let token = req.headers()
+                .get("Cookie")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|cookies| {
+                    cookies.split(';').find_map(|pair| {
+                        let pair = pair.trim();
+                        pair.strip_prefix("access_token=").map(|v| v.to_string())
+                    })
+                });
+
             match token.filter(|t| decode_token(t, &secret).is_ok()) {
                 Some(_) => Ok(res),
                 None => {
@@ -71,7 +74,6 @@ pub async fn run_ws_server(
             ws_stream,
             peer_addr,
             ws_list.clone(),
-            jwt_secret.clone(),
             graph.clone(),
         ));
     }
@@ -92,8 +94,7 @@ async fn handle_connection(
     ws_stream: WebSocketStream<TcpStream>,
     peer_addr: SocketAddr,
     ws_list: WebSocketList,
-    jwt_secret: String,
-    graph: Arc<Graph>,
+    _graph: Arc<Graph>,
 ) {
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
 
@@ -117,38 +118,7 @@ async fn handle_connection(
                             Ok(incoming_message) => {
                                 match incoming_message.r#type.as_str() {
                                     "ping" => {
-                                        if let Some(token) = &incoming_message.token {
-                                            if decode_token(token, &jwt_secret).is_err() {
-                                                let refreshed = try_refresh(
-                                                    &graph,
-                                                    &jwt_secret,
-                                                    incoming_message.refresh_token.as_deref(),
-                                                ).await;
-
-                                                match refreshed {
-                                                    Some((new_jwt, new_rt)) => {
-                                                        let payload = serde_json::json!({
-                                                            "token": new_jwt,
-                                                            "refresh_token": new_rt,
-                                                        });
-                                                        send_to_peer(&ws_list_incoming, peer_addr, IncomingMessage {
-                                                            r#type: "token_refreshed".to_string(),
-                                                            data: Some(MessageData { message: payload.to_string() }),
-                                                            token: None,
-                                                            refresh_token: None,
-                                                        }).await;
-                                                    }
-                                                    None => {
-                                                        send_to_peer(&ws_list_incoming, peer_addr, IncomingMessage {
-                                                            r#type: "force_logout".to_string(),
-                                                            data: None,
-                                                            token: None,
-                                                            refresh_token: None,
-                                                        }).await;
-                                                    }
-                                                }
-                                            }
-                                        }
+                                        // Keep-alive only — auth is enforced at connect time.
                                         continue;
                                     }
                                     "trailer_update" => {
@@ -211,35 +181,4 @@ async fn handle_connection(
         list.remove(&peer_addr);
         println!("Client {} disconnected. Total clients: {}", peer_addr, list.len());
     });
-}
-
-async fn try_refresh(
-    graph: &Arc<Graph>,
-    jwt_secret: &str,
-    refresh_token: Option<&str>,
-) -> Option<(String, String)> {
-    let rt = refresh_token?;
-    let now = chrono::Utc::now().timestamp();
-
-    let mut result = graph.execute(
-        query("
-            MATCH (r:RefreshToken {token: $token})
-            WHERE r.expires_at > $now
-            WITH r.username AS username, r.role AS role
-            DELETE r
-            RETURN username, role
-        ")
-        .param("token", rt)
-        .param("now", now),
-    ).await.ok()?;
-
-    let row = result.next().await.ok()??;
-    let username: String = row.get("username").ok()?;
-    let role: String     = row.get("role").ok()?;
-
-    let new_jwt = issue_access_token(&username, &role, jwt_secret).ok()?;
-    let new_rt  = uuid::Uuid::new_v4().to_string();
-    store_refresh_token(graph, &new_rt, &username, &role).await.ok()?;
-
-    Some((new_jwt, new_rt))
 }

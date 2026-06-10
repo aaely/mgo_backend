@@ -516,7 +516,7 @@ pub async fn get_past_shift(
 #[get("/api/get_live_trailers")]
 pub async fn get_live_trailers(
     state: &State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     role: Role,
 ) -> Result<Json<Vec<TrailerRecord>>, Json<&'static str>> {
     let graph = &state.graph;
@@ -558,15 +558,31 @@ pub async fn get_live_trailers(
                     lateComments:      Some(node.get("lateComments").unwrap_or_default()),
                     gmComments:        Some(node.get("gmComments").unwrap_or_default()),
                     lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
-                    editRef:           node.get("editRef").unwrap_or_default(),
+                    editRef:           String::new(),
                 });
             }
+
             if role.0.contains("univ") {
                 records.retain(|r| r.dockCode == "U");
             }
             if role.0.contains("vaa") {
                 records.retain(|r| r.dockCode == "V");
             }
+
+            // Generate a fresh, per-user editRef for each trailer and store the mapping.
+            {
+                let mut edit_refs = state.edit_refs.lock().await;
+                let user_map = edit_refs
+                    .entry(user.0.username.clone())
+                    .or_insert_with(HashMap::new);
+                user_map.clear();
+                for record in &mut records {
+                    let edit_ref = uuid::Uuid::new_v4().to_string();
+                    user_map.insert(edit_ref.clone(), record.uuid.clone());
+                    record.editRef = edit_ref;
+                }
+            }
+
             Ok(Json(records))
         }
         Err(e) => {

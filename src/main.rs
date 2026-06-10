@@ -46,6 +46,7 @@ impl AppState {
             graph: Arc::new(graph),
             jwt_secret: "tO7E8uCjD5rXpQl0FhKwV2yMz4bJnAi9sGeR3kTzXvNmPuLsDq8W".to_string(),
             alerted_parts: Arc::new(Mutex::new(HashMap::new())),
+            edit_refs:     Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
