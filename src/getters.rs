@@ -1207,6 +1207,89 @@ pub async fn get_edock_asn(state: &State<AppState>) -> Json<Vec<PartASN>> {
     Json(parts)
 }
 
+#[get("/api/get_part_asn")]
+pub async fn get_part_asn(state: &State<AppState>) -> Json<Vec<PartASN>> {
+    let graph = &state.graph;
+
+    let q = neo4rs::query(
+        "MATCH (p:PartASN) RETURN p"
+    );
+
+    let mut result = match graph.execute(q).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("get_part_asn error: {e}");
+            return Json(vec![]);
+        }
+    };
+
+    let mut parts: Vec<PartASN> = vec![];
+    while let Ok(Some(row)) = result.next().await {
+        if let Ok(node) = row.get::<neo4rs::Node>("p") {
+            parts.push(PartASN {
+                scac:         node.get("scac").unwrap_or_default(),
+                trailer:      node.get("trailer").unwrap_or_default(),
+                deck:         node.get("deck").unwrap_or_default(),
+                part:         node.get("part").unwrap_or_default(),
+                mode:         node.get("mode").unwrap_or_default(),
+                duns:         node.get("duns").unwrap_or_default(),
+                sid:          node.get("sid").unwrap_or_default(),
+                countComment: Some(node.get("countComment").unwrap_or_default()),
+                shipComment:  node.get("shipComment").unwrap_or_default(),
+                shipDate:     node.get("shipDate").unwrap_or_default(),
+                dock:         node.get("dock").unwrap_or_default(),
+                eda:          node.get("eda").unwrap_or_default(),
+                eta:          node.get("eta").unwrap_or_default(),
+                quantity:     Some(node.get::<f64>("quantity").unwrap_or_default()),
+                status:       Some(node.get::<i64>("status").unwrap_or_default() as u32),
+            });
+        }
+    }
+
+    Json(parts)
+}
+
+#[get("/api/get_part_asl")]
+pub async fn get_part_asl(state: &State<AppState>) -> Json<Vec<PartASL>> {
+    let graph = &state.graph;
+
+    let q = neo4rs::query(
+        "MATCH (p:PartASL) RETURN p"
+    );
+
+    let mut result = match graph.execute(q).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("get_part_asl error: {e}");
+            return Json(vec![]);
+        }
+    };
+
+    let mut parts: Vec<PartASL> = vec![];
+    while let Ok(Some(row)) = result.next().await {
+        if let Ok(node) = row.get::<neo4rs::Node>("p") {
+            parts.push(PartASL {
+                deck:     node.get("deck").unwrap_or_default(),
+                part:     node.get("part").unwrap_or_default(),
+                duns:     node.get("duns").unwrap_or_default(),
+                supplier: node.get("supplier").unwrap_or_default(),
+                doh:      node.get("doh").unwrap_or_default(),
+                bank:     node.get("bank").unwrap_or_default(),
+                desc:     node.get("desc").unwrap_or_default(),
+                cbal:     node.get("cbal").unwrap_or_default(),
+                day1:     node.get("day1").ok(),
+                day2:     node.get("day2").ok(),
+                day3:     node.get("day3").ok(),
+                day4:     node.get("day4").ok(),
+                day5:     node.get("day5").ok(),
+                day6:     node.get("day6").ok(),
+            });
+        }
+    }
+
+    Json(parts)
+}
+
 #[get("/api/dock_count?<date>&<hour>&<dock>")]
 pub async fn get_dock_count(
     date:  String,

@@ -103,6 +103,8 @@ async fn main() {
             refresh_token,
             get_part_info,
             get_edock_asn,
+            get_part_asn,
+            get_part_asl,
             get_scan_asn,
             get_scan_asn_deck,
             get_scan_decks,
