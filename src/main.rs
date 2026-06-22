@@ -130,6 +130,7 @@ async fn main() {
             get_past_shift,
             get_live_trailers,
             push_add_on,
+            get_hot_parts,
             get_dock_count,
             restart_week,
             saturday_counts,
@@ -151,6 +152,8 @@ async fn main() {
             register,
             upload_lms,
             push_reschedules,
+            create_hot_part,
+            close_hot_part,
             send_email_route,
             logout
             ])

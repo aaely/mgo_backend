@@ -467,6 +467,36 @@ pub struct DeleteUserRequest {
     pub name: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct HotPartAsn {
+    pub trailer:  String,
+    pub quantity: f64,
+    pub eda:      String,
+    pub eta:      String,
+    pub count:    String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+pub struct HotPart {
+    pub part:       String,
+    pub pdt:        String,
+    pub mfu:        String,
+    pub comments:   String,
+    #[serde(default)]
+    pub updated_at: String,
+    pub asn_list:   Vec<HotPartAsn>,
+    pub day1:       Option<f64>,
+    pub day2:       Option<f64>,
+    pub day3:       Option<f64>,
+    pub day4:       Option<f64>,
+    pub day5:       Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CloseHotPartRequest {
+    pub part: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PartAlert {
     pub part:               String,

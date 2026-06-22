@@ -1415,3 +1415,46 @@ pub async fn get_dock_count(
 
     Ok(Json(DockCountResponse { hr_total, shift_total }))
 }
+
+#[get("/api/get_hot_parts")]
+pub async fn get_hot_parts(
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+) -> Result<Json<Vec<HotPart>>, Json<&'static str>> {
+    let graph = &state.graph;
+
+    let q = query("
+        MATCH (h:ActiveHotPart)
+        RETURN h
+        ORDER BY h.updated_at DESC
+    ");
+
+    match graph.execute(q).await {
+        Ok(mut result) => {
+            let mut records: Vec<HotPart> = Vec::new();
+            while let Ok(Some(row)) = result.next().await {
+                let node: Node = row.get("h").map_err(|_| Json("Failed to get node"))?;
+                let asn_str: String = node.get("asn_list").unwrap_or_else(|_| "[]".to_string());
+                let asn_list: Vec<HotPartAsn> = serde_json::from_str(&asn_str).unwrap_or_default();
+                records.push(HotPart {
+                    part:       node.get("part").unwrap_or_default(),
+                    pdt:        node.get("pdt").unwrap_or_default(),
+                    mfu:        node.get("mfu").unwrap_or_default(),
+                    comments:   node.get("comments").unwrap_or_default(),
+                    updated_at: node.get("updated_at").unwrap_or_default(),
+                    asn_list,
+                    day1:       node.get("day1").ok(),
+                    day2:       node.get("day2").ok(),
+                    day3:       node.get("day3").ok(),
+                    day4:       node.get("day4").ok(),
+                    day5:       node.get("day5").ok(),
+                });
+            }
+            Ok(Json(records))
+        }
+        Err(e) => {
+            eprintln!("Failed to get hot parts: {:?}", e);
+            Err(Json("Failed to get hot parts"))
+        }
+    }
+}

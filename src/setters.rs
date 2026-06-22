@@ -1896,3 +1896,107 @@ pub async fn push_reschedules(
 
     Ok(Json("Reschedules pushed"))
 }
+
+#[post("/api/create_hot_part", format = "json", data = "<req>")]
+pub async fn create_hot_part(
+    req:   Json<HotPart>,
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+) -> Result<Json<HotPart>, Json<&'static str>> {
+    let graph = &state.graph;
+    let updated_at = chrono::Utc::now().format("%Y-%m-%d %H:%M").to_string();
+    let asn_json = serde_json::to_string(&req.asn_list).unwrap_or_else(|_| "[]".to_string());
+
+    let q = query("
+        MERGE (h:ActiveHotPart {part: $part})
+        SET h.pdt        = $pdt,
+            h.mfu        = $mfu,
+            h.comments = coalesce(h.comments, '') + ' ' + $comments,
+            h.updated_at = $updated_at,
+            h.asn_list   = $asn_list,
+            h.day1       = $day1,
+            h.day2       = $day2,
+            h.day3       = $day3,
+            h.day4       = $day4,
+            h.day5       = $day5
+        RETURN h
+    ")
+    .param("part",       req.part.clone())
+    .param("pdt",        req.pdt.clone())
+    .param("mfu",        req.mfu.clone())
+    .param("comments",   req.comments.clone())
+    .param("updated_at", updated_at)
+    .param("asn_list",   asn_json)
+    .param("day1",       req.day1)
+    .param("day2",       req.day2)
+    .param("day3",       req.day3)
+    .param("day4",       req.day4)
+    .param("day5",       req.day5);
+
+    match graph.execute(q).await {
+        Ok(mut result) => {
+            if let Ok(Some(row)) = result.next().await {
+                let node: Node = row.get("h").map_err(|_| Json("Failed to get node"))?;
+                let asn_str: String = node.get("asn_list").unwrap_or_else(|_| "[]".to_string());
+                let asn_list: Vec<HotPartAsn> = serde_json::from_str(&asn_str).unwrap_or_default();
+                Ok(Json(HotPart {
+                    part:       node.get("part").unwrap_or_default(),
+                    pdt:        node.get("pdt").unwrap_or_default(),
+                    mfu:        node.get("mfu").unwrap_or_default(),
+                    comments:   node.get("comments").unwrap_or_default(),
+                    updated_at: node.get("updated_at").unwrap_or_default(),
+                    asn_list,
+                    day1:       node.get("day1").ok(),
+                    day2:       node.get("day2").ok(),
+                    day3:       node.get("day3").ok(),
+                    day4:       node.get("day4").ok(),
+                    day5:       node.get("day5").ok(),
+                }))
+            } else {
+                Err(Json("Failed to create hot part"))
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to create hot part: {:?}", e);
+            Err(Json("Failed to create hot part"))
+        }
+    }
+}
+
+#[post("/api/close_hot_part", format = "json", data = "<req>")]
+pub async fn close_hot_part(
+    req:   Json<CloseHotPartRequest>,
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+) -> Result<Json<&'static str>, Json<&'static str>> {
+    let graph = &state.graph;
+    let resolved_at = chrono::Utc::now().format("%Y-%m-%d %H:%M").to_string();
+
+    let q = query("
+        MATCH (h:ActiveHotPart {part: $part})
+        CREATE (r:ResolvedHotPart {
+            part:        h.part,
+            pdt:         h.pdt,
+            mfu:         h.mfu,
+            comments:    h.comments,
+            asn_list:    h.asn_list,
+            day1:        h.day1,
+            day2:        h.day2,
+            day3:        h.day3,
+            day4:        h.day4,
+            day5:        h.day5,
+            submitted_at: h.updated_at,
+            resolved_at: $resolved_at
+        })
+        DELETE h
+    ")
+    .param("part",        req.part.clone())
+    .param("resolved_at", resolved_at);
+
+    graph.run(q).await.map_err(|e| {
+        eprintln!("Failed to close hot part: {:?}", e);
+        Json("Failed to close hot part")
+    })?;
+
+    Ok(Json("Hot part resolved"))
+}
