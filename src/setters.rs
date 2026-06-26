@@ -314,7 +314,7 @@ pub async fn upload_in_transit(
 pub async fn upload_exception(
     upload_exception: Json<Vec<ExceptionLogEntry>>,
     state: &State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     role: Role,
 ) -> Result<Json<Vec<ExceptionLogEntry>>, Json<&'static str>> {
     let graph = &state.graph;
@@ -403,6 +403,31 @@ pub async fn upload_exception(
                         comment:      e.get("comment").unwrap_or_default(),
                         requestor:    e.get("requestor").unwrap_or_default(),
                     };
+
+                    // ── Audit trail: log exception upload ──
+                    let audit_timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                    let audit_op_date   = chrono::Utc::now().format("%Y-%m-%d").to_string();
+                    let aq = neo4rs::query("
+                        MERGE (o:OpDate {date: $op_date})
+                        CREATE (a:AuditEvent {
+                            trailer_uuid: '',
+                            field:        'exception_uploaded',
+                            old_value:    '',
+                            new_value:    $load_num,
+                            timestamp:    $timestamp,
+                            updated_by:   $updated_by
+                        })
+                        CREATE (o)-[:HAS_AUDIT]->(a)
+                    ")
+                    .param("op_date",    audit_op_date)
+                    .param("load_num",   line.loadNum.clone())
+                    .param("timestamp",  audit_timestamp)
+                    .param("updated_by", user.0.username.clone());
+
+                    if let Err(e) = graph.run(aq).await {
+                        eprintln!("Failed to write exception audit event: {:?}", e);
+                    }
+
                     created_lines.push(record);
                 }
             }
@@ -420,7 +445,7 @@ pub async fn upload_exception(
 pub async fn upload_dycomm(
     upload_dycomm: Json<Vec<DyCommLogEntry>>,
     state: &State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     role: Role,
 ) -> Result<Json<Vec<DyCommLogEntry>>, Json<&'static str>> {
     let graph = &state.graph;
@@ -490,6 +515,31 @@ pub async fn upload_dycomm(
                         pdt:          d.get("pdt").unwrap_or_default(),
                         createdBy:    d.get("createdBy").unwrap_or_default(),
                     };
+
+                    // ── Audit trail: log dycomm upload ──
+                    let audit_timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                    let audit_op_date   = chrono::Utc::now().format("%Y-%m-%d").to_string();
+                    let aq = neo4rs::query("
+                        MERGE (o:OpDate {date: $op_date})
+                        CREATE (a:AuditEvent {
+                            trailer_uuid: '',
+                            field:        'dycomm_uploaded',
+                            old_value:    '',
+                            new_value:    $load_num,
+                            timestamp:    $timestamp,
+                            updated_by:   $updated_by
+                        })
+                        CREATE (o)-[:HAS_AUDIT]->(a)
+                    ")
+                    .param("op_date",    audit_op_date)
+                    .param("load_num",   line.loadNum.clone())
+                    .param("timestamp",  audit_timestamp)
+                    .param("updated_by", user.0.username.clone());
+
+                    if let Err(e) = graph.run(aq).await {
+                        eprintln!("Failed to write dycomm audit event: {:?}", e);
+                    }
+
                     created_lines.push(record);
                 }
             }
@@ -627,7 +677,7 @@ pub async fn delivered(
 pub async fn roll_next_shift(
     req: Json<RollNextShiftRequest>,
     state: &State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     role: Role,
 ) -> Result<Json<&'static str>, Json<&'static str>> {
     let graph = &state.graph;
@@ -674,7 +724,9 @@ pub async fn roll_next_shift(
             loadComments:       t.loadComments,
             ryderComments:      t.ryderComments,
             lateComments:       t.lateComments,
-            gmComments:         t.gmComments
+            gmComments:         t.gmComments,
+            door:               t.door,
+            doorArrivalTime:    t.doorArrivalTime
         })
         CREATE (o)-[:HAS_TRAILER]->(r)
     ")
@@ -742,7 +794,9 @@ pub async fn roll_next_shift(
             loadComments:       s.loadComments,
             ryderComments:      s.ryderComments,
             lateComments:       s.lateComments,
-            gmComments:         s.gmComments
+            gmComments:         s.gmComments,
+            door:               '',
+            doorArrivalTime:    ''
         })
         DELETE s
     ");
@@ -751,6 +805,67 @@ pub async fn roll_next_shift(
         eprintln!("Failed to promote staged trailers: {:?}", e);
         Json("Failed to promote staged trailers")
     })?;
+
+    // ── Backup: dump Neo4j database to a dated directory ──
+    let backup_dir = format!("backup/{}", operational_date);
+    if let Err(e) = std::fs::create_dir_all(&backup_dir) {
+        eprintln!("Failed to create backup directory {}: {:?}", backup_dir, e);
+    } else {
+        match tokio::process::Command::new("neo4j-admin")
+            .args(["database", "dump", "neo4j", &format!("--to-path={}", backup_dir)])
+            .output()
+            .await
+        {
+            Ok(out) if out.status.success() => {
+                println!("Database backup written to {}/neo4j.dump", backup_dir);
+            }
+            Ok(out) => {
+                eprintln!("Backup command failed: {}", String::from_utf8_lossy(&out.stderr));
+            }
+            Err(e) => {
+                eprintln!("Failed to run neo4j-admin: {:?}", e);
+            }
+        }
+    }
+
+    // ── Purge AuditEvent nodes older than 90 days ──
+    let cutoff = (chrono::Utc::now() - chrono::Duration::days(90))
+        .format("%Y-%m-%d")
+        .to_string();
+
+    let purge_query = query("
+        MATCH (o:OpDate)
+        WHERE o.date < $cutoff
+        OPTIONAL MATCH (o)-[:HAS_AUDIT]->(a:AuditEvent)
+        DETACH DELETE a
+    ")
+    .param("cutoff", cutoff);
+
+    if let Err(e) = graph.run(purge_query).await {
+        eprintln!("Failed to purge old audit events: {:?}", e);
+    }
+
+    // ── Audit trail: record shift roll event on the OpDate ──
+    let audit_timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let audit_query = query("
+        MATCH (o:OpDate {date: $operational_date})
+        CREATE (a:AuditEvent {
+            trailer_uuid: '',
+            field:        'shift_rolled',
+            old_value:    'active',
+            new_value:    $operational_date,
+            timestamp:    $timestamp,
+            updated_by:   $updated_by
+        })
+        CREATE (o)-[:HAS_AUDIT]->(a)
+    ")
+    .param("operational_date", operational_date.clone())
+    .param("timestamp",        audit_timestamp)
+    .param("updated_by",       user.0.username.clone());
+
+    if let Err(e) = graph.run(audit_query).await {
+        eprintln!("Failed to write roll_next_shift audit event: {:?}", e);
+    }
 
     Ok(Json("Roll next shift completed successfully"))
 }
@@ -793,7 +908,9 @@ pub async fn push_add_on (
             ryderComments:     $ryderComments,
             lateComments:      $lateComments,
             gmComments:        $gmComments,
-            lowestDoh:         $lowestDoh
+            lowestDoh:         $lowestDoh,
+            door:              $door,
+            doorArrivalTime:   $doorArrivalTime
         })
         RETURN t
     ")
@@ -824,7 +941,9 @@ pub async fn push_add_on (
     .param("ryderComments",     add_on.ryderComments.clone())
     .param("lateComments",      add_on.lateComments.clone().unwrap_or_default())
     .param("gmComments",        add_on.gmComments.clone().unwrap_or_default())
-    .param("lowestDoh",         add_on.lowestDoh.clone().unwrap_or_default());
+    .param("lowestDoh",         add_on.lowestDoh.clone().unwrap_or_default())
+    .param("door",              add_on.door.clone())
+    .param("doorArrivalTime",   add_on.doorArrivalTime.clone());
 
     match graph.execute(q).await {
         Ok(mut result) => {
@@ -862,6 +981,8 @@ pub async fn push_add_on (
                     gmComments:        Some(node.get("gmComments").unwrap_or_default()),
                     lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
                     editRef:           String::new(),
+                    door:              node.get("door").unwrap_or_default(),
+                    doorArrivalTime:   node.get("doorArrivalTime").unwrap_or_default(),
                 };
 
                 // ── Broadcast without editRef (editRefs are per-user, not shared) ──
@@ -888,6 +1009,33 @@ pub async fn push_add_on (
                         .insert(creator_edit_ref.clone(), created.uuid.clone());
                 }
 
+                // ── Audit trail: single entry for live add-on ──
+                let audit_timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                let audit_op_date   = chrono::Utc::now().format("%Y-%m-%d").to_string();
+                let audit_new_value = format!("{}/{}", created.lmsAccent, created.trailer1);
+
+                let aq = query("
+                    MERGE (o:OpDate {date: $op_date})
+                    CREATE (a:AuditEvent {
+                        trailer_uuid: $uuid,
+                        field:        'LiveAdd',
+                        old_value:    '',
+                        new_value:    $new_value,
+                        timestamp:    $timestamp,
+                        updated_by:   $updated_by
+                    })
+                    CREATE (o)-[:HAS_AUDIT]->(a)
+                ")
+                .param("op_date",    audit_op_date)
+                .param("uuid",       created.uuid.clone())
+                .param("new_value",  audit_new_value)
+                .param("timestamp",  audit_timestamp)
+                .param("updated_by", user.0.username.clone());
+
+                if let Err(e) = graph.run(aq).await {
+                    eprintln!("Failed to write LiveAdd audit event: {:?}", e);
+                }
+
                 Ok(Json(TrailerRecord { editRef: creator_edit_ref, ..created }))
             } else {
                 Err(Json("Failed to create add on"))
@@ -904,7 +1052,7 @@ pub async fn push_add_on (
 pub async fn upload_on_deck(
     upload_on_deck: Json<Vec<TrailerRecord>>,
     state: &State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     role: Role,
 ) -> Result<Json<Vec<TrailerRecord>>, Json<&'static str>> {
 
@@ -947,7 +1095,9 @@ pub async fn upload_on_deck(
             lowestDoh: $lowestDoh,
             loadComments: $loadComments,
             ryderComments: $ryderComments,
-            gmComments: $gmComments
+            gmComments: $gmComments,
+            door: '',
+            doorArrivalTime: ''
         })
         RETURN t
     ")
@@ -1051,7 +1201,59 @@ pub async fn upload_on_deck(
                         gmComments: Some(gmComments),
                         lowestDoh: Some(lowestDoh),
                         editRef,
+                        door:            String::new(),
+                        doorArrivalTime: String::new(),
                     };
+                    // ── Audit trail: log initial field values on creation ──
+                    let audit_timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                    let audit_op_date   = chrono::Utc::now().format("%Y-%m-%d").to_string();
+                    let audit_user      = user.0.username.clone();
+
+                    let audit_pairs: Vec<(&'static str, String)> = vec![
+                        ("hour",              trailer.hour.clone()),
+                        ("dockCode",          trailer.dockCode.clone()),
+                        ("scac",              trailer.scac.clone()),
+                        ("trailer1",          trailer.trailer1.clone()),
+                        ("trailer2",          trailer.trailer2.clone()),
+                        ("adjustedStartTime", trailer.adjustedStartTime.clone()),
+                        ("scheduleEndDate",   trailer.scheduleEndDate.clone()),
+                        ("scheduleEndTime",   trailer.scheduleEndTime.clone()),
+                        ("gateArrivalTime",   trailer.gateArrivalTime.clone()),
+                        ("actualStartTime",   trailer.actualStartTime.clone()),
+                        ("actualEndTime",     trailer.actualEndTime.clone()),
+                        ("statusOX",          trailer.statusOX.clone()),
+                        ("ryderComments",     trailer.ryderComments.clone()),
+                        ("gmComments",        trailer.gmComments.clone().unwrap_or_default()),
+                        ("lateComments",      trailer.lateComments.clone().unwrap_or_default()),
+                    ];
+
+                    for (field, new_val) in &audit_pairs {
+                        if !new_val.is_empty() {
+                            let aq = neo4rs::query("
+                                MERGE (o:OpDate {date: $op_date})
+                                CREATE (a:AuditEvent {
+                                    trailer_uuid: $uuid,
+                                    field:        $field,
+                                    old_value:    '',
+                                    new_value:    $new_value,
+                                    timestamp:    $timestamp,
+                                    updated_by:   $updated_by
+                                })
+                                CREATE (o)-[:HAS_AUDIT]->(a)
+                            ")
+                            .param("op_date",    audit_op_date.clone())
+                            .param("uuid",       trailer.uuid.clone())
+                            .param("field",      field.to_string())
+                            .param("new_value",  new_val.clone())
+                            .param("timestamp",  audit_timestamp.clone())
+                            .param("updated_by", audit_user.clone());
+
+                            if let Err(e) = graph.run(aq).await {
+                                eprintln!("Failed to write audit event for field {}: {:?}", field, e);
+                            }
+                        }
+                    }
+
                     created_lines.push(trailer);
                 }
                 Ok(None) => {}
@@ -1151,6 +1353,41 @@ pub async fn update_live_trailer(
     let mut trailer = trailer_info.into_inner();
     trailer.uuid = uuid;
 
+    // ── Fetch pre-update state for audit diff ──
+    let pre_fetch_q = query("MATCH (t:LiveTrailer {uuid: $uuid}) RETURN t")
+        .param("uuid", trailer.uuid.clone());
+
+    let old_values: HashMap<&'static str, String> = match graph.execute(pre_fetch_q).await {
+        Ok(mut result) => {
+            if let Ok(Some(row)) = result.next().await {
+                if let Ok(n) = row.get::<Node>("t") {
+                    let mut m: HashMap<&'static str, String> = HashMap::new();
+                    m.insert("hour",              n.get("hour").unwrap_or_default());
+                    m.insert("dockCode",          n.get("dockCode").unwrap_or_default());
+                    m.insert("scac",              n.get("scac").unwrap_or_default());
+                    m.insert("trailer1",          n.get("trailer1").unwrap_or_default());
+                    m.insert("trailer2",          n.get("trailer2").unwrap_or_default());
+                    m.insert("adjustedStartTime", n.get("adjustedStartTime").unwrap_or_default());
+                    m.insert("scheduleEndDate",   n.get("scheduleEndDate").unwrap_or_default());
+                    m.insert("scheduleEndTime",   n.get("scheduleEndTime").unwrap_or_default());
+                    m.insert("gateArrivalTime",   n.get("gateArrivalTime").unwrap_or_default());
+                    m.insert("actualStartTime",   n.get("actualStartTime").unwrap_or_default());
+                    m.insert("actualEndTime",     n.get("actualEndTime").unwrap_or_default());
+                    m.insert("statusOX",          n.get("statusOX").unwrap_or_default());
+                    m.insert("ryderComments",     n.get("ryderComments").unwrap_or_default());
+                    m.insert("gmComments",        n.get("gmComments").unwrap_or_default());
+                    m.insert("lateComments",      n.get("lateComments").unwrap_or_default());
+                    m
+                } else {
+                    HashMap::new()
+                }
+            } else {
+                HashMap::new()
+            }
+        }
+        Err(_) => HashMap::new(),
+    };
+
     let update_query = build_update_query(&role.0, &trailer);
 
     match graph.execute(update_query).await {
@@ -1188,6 +1425,8 @@ pub async fn update_live_trailer(
                     gmComments:        Some(node.get("gmComments").unwrap_or_default()),
                     lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
                     editRef:           String::new(),
+                    door:              node.get("door").unwrap_or_default(),
+                    doorArrivalTime:   node.get("doorArrivalTime").unwrap_or_default(),
                 };
                 // ── Broadcast without editRef (per-user, not shareable) ──
                 if let Ok(data) = serde_json::to_value(&updated) {
@@ -1202,6 +1441,57 @@ pub async fn update_live_trailer(
                         }
                     }
                 }
+                // ── Audit trail: log field changes linked to current OpDate ──
+                let audit_timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                let audit_op_date   = chrono::Utc::now().format("%Y-%m-%d").to_string();
+                let audit_user      = user.0.username.clone();
+
+                let audit_pairs: Vec<(&'static str, String, String)> = vec![
+                    ("hour",              old_values.get("hour").cloned().unwrap_or_default(),              updated.hour.clone()),
+                    ("dockCode",          old_values.get("dockCode").cloned().unwrap_or_default(),          updated.dockCode.clone()),
+                    ("scac",              old_values.get("scac").cloned().unwrap_or_default(),              updated.scac.clone()),
+                    ("trailer1",          old_values.get("trailer1").cloned().unwrap_or_default(),          updated.trailer1.clone()),
+                    ("trailer2",          old_values.get("trailer2").cloned().unwrap_or_default(),          updated.trailer2.clone()),
+                    ("adjustedStartTime", old_values.get("adjustedStartTime").cloned().unwrap_or_default(), updated.adjustedStartTime.clone()),
+                    ("scheduleEndDate",   old_values.get("scheduleEndDate").cloned().unwrap_or_default(),   updated.scheduleEndDate.clone()),
+                    ("scheduleEndTime",   old_values.get("scheduleEndTime").cloned().unwrap_or_default(),   updated.scheduleEndTime.clone()),
+                    ("gateArrivalTime",   old_values.get("gateArrivalTime").cloned().unwrap_or_default(),   updated.gateArrivalTime.clone()),
+                    ("actualStartTime",   old_values.get("actualStartTime").cloned().unwrap_or_default(),   updated.actualStartTime.clone()),
+                    ("actualEndTime",     old_values.get("actualEndTime").cloned().unwrap_or_default(),     updated.actualEndTime.clone()),
+                    ("statusOX",          old_values.get("statusOX").cloned().unwrap_or_default(),          updated.statusOX.clone()),
+                    ("ryderComments",     old_values.get("ryderComments").cloned().unwrap_or_default(),     updated.ryderComments.clone()),
+                    ("gmComments",        old_values.get("gmComments").cloned().unwrap_or_default(),        updated.gmComments.clone().unwrap_or_default()),
+                    ("lateComments",      old_values.get("lateComments").cloned().unwrap_or_default(),      updated.lateComments.clone().unwrap_or_default()),
+                ];
+
+                for (field, old_val, new_val) in &audit_pairs {
+                    if old_val != new_val {
+                        let aq = query("
+                            MERGE (o:OpDate {date: $op_date})
+                            CREATE (a:AuditEvent {
+                                trailer_uuid: $uuid,
+                                field:        $field,
+                                old_value:    $old_value,
+                                new_value:    $new_value,
+                                timestamp:    $timestamp,
+                                updated_by:   $updated_by
+                            })
+                            CREATE (o)-[:HAS_AUDIT]->(a)
+                        ")
+                        .param("op_date",    audit_op_date.clone())
+                        .param("uuid",       updated.uuid.clone())
+                        .param("field",      field.to_string())
+                        .param("old_value",  old_val.clone())
+                        .param("new_value",  new_val.clone())
+                        .param("timestamp",  audit_timestamp.clone())
+                        .param("updated_by", audit_user.clone());
+
+                        if let Err(e) = graph.run(aq).await {
+                            eprintln!("Failed to write audit event for field {}: {:?}", field, e);
+                        }
+                    }
+                }
+
                 // ── Echo the caller's editRef back so their local state stays valid ──
                 Ok(Json(TrailerRecord { editRef: user_edit_ref, ..updated }))
             } else {
@@ -1901,7 +2191,7 @@ pub async fn push_reschedules(
 pub async fn create_hot_part(
     req:   Json<HotPart>,
     state: &State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
 ) -> Result<Json<HotPart>, Json<&'static str>> {
     let graph = &state.graph;
     let updated_at = chrono::Utc::now().format("%Y-%m-%d %H:%M").to_string();
@@ -1939,6 +2229,31 @@ pub async fn create_hot_part(
                 let node: Node = row.get("h").map_err(|_| Json("Failed to get node"))?;
                 let asn_str: String = node.get("asn_list").unwrap_or_else(|_| "[]".to_string());
                 let asn_list: Vec<HotPartAsn> = serde_json::from_str(&asn_str).unwrap_or_default();
+
+                // ── Audit trail: log hot part creation/update ──
+                let audit_timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                let audit_op_date   = chrono::Utc::now().format("%Y-%m-%d").to_string();
+                let aq = query("
+                    MERGE (o:OpDate {date: $op_date})
+                    CREATE (a:AuditEvent {
+                        trailer_uuid: '',
+                        field:        'hot_part_created',
+                        old_value:    '',
+                        new_value:    $part,
+                        timestamp:    $timestamp,
+                        updated_by:   $updated_by
+                    })
+                    CREATE (o)-[:HAS_AUDIT]->(a)
+                ")
+                .param("op_date",    audit_op_date)
+                .param("part",       req.part.clone())
+                .param("timestamp",  audit_timestamp)
+                .param("updated_by", user.0.username.clone());
+
+                if let Err(e) = graph.run(aq).await {
+                    eprintln!("Failed to write hot_part audit event: {:?}", e);
+                }
+
                 Ok(Json(HotPart {
                     part:       node.get("part").unwrap_or_default(),
                     pdt:        node.get("pdt").unwrap_or_default(),
@@ -1967,7 +2282,7 @@ pub async fn create_hot_part(
 pub async fn close_hot_part(
     req:   Json<CloseHotPartRequest>,
     state: &State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
 ) -> Result<Json<&'static str>, Json<&'static str>> {
     let graph = &state.graph;
     let resolved_at = chrono::Utc::now().format("%Y-%m-%d %H:%M").to_string();
@@ -1997,6 +2312,30 @@ pub async fn close_hot_part(
         eprintln!("Failed to close hot part: {:?}", e);
         Json("Failed to close hot part")
     })?;
+
+    // ── Audit trail: log hot part closure ──
+    let audit_timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let audit_op_date   = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let aq = query("
+        MERGE (o:OpDate {date: $op_date})
+        CREATE (a:AuditEvent {
+            trailer_uuid: '',
+            field:        'hot_part_closed',
+            old_value:    $part,
+            new_value:    'resolved',
+            timestamp:    $timestamp,
+            updated_by:   $updated_by
+        })
+        CREATE (o)-[:HAS_AUDIT]->(a)
+    ")
+    .param("op_date",    audit_op_date)
+    .param("part",       req.part.clone())
+    .param("timestamp",  audit_timestamp)
+    .param("updated_by", user.0.username.clone());
+
+    if let Err(e) = graph.run(aq).await {
+        eprintln!("Failed to write hot_part_closed audit event: {:?}", e);
+    }
 
     Ok(Json("Hot part resolved"))
 }

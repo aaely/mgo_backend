@@ -10,7 +10,8 @@ mod wsserver;
 mod helpers;
 mod emailer;
 use rocket::data::ToByteUnit;
-use rocket::routes;
+use rocket::{get, routes};
+use rocket::fs::{FileServer, NamedFile};
 use neo4rs::Graph;
 use structs::{AppState, late_trailer_service, part_monitoring_service};
 use tokio::sync::Mutex;
@@ -49,6 +50,11 @@ impl AppState {
             edit_refs:     Arc::new(Mutex::new(HashMap::new())),
         }
     }
+}
+
+#[get("/<_..>", rank = 20)]
+async fn spa_fallback() -> Option<NamedFile> {
+    NamedFile::open("dist/index.html").await.ok()
 }
 
 #[rocket::main]
@@ -97,6 +103,7 @@ async fn main() {
                 part_monitoring_service(graph3, ws_list3, alerted).await;
             });
         })))
+        .mount("/", FileServer::from("dist"))
         .mount("/", routes![
             roll_next_shift,
             ws_handler,
@@ -155,7 +162,9 @@ async fn main() {
             create_hot_part,
             close_hot_part,
             send_email_route,
-            logout
+            logout,
+            get_audit_events,
+            spa_fallback
             ])
         .manage(state)
         .launch()

@@ -86,7 +86,12 @@ pub struct TrailerRecord {
     pub gmComments: Option<String>,
     pub lowestDoh: Option<String>,
     pub uuid: String,
+    #[serde(default)]
     pub editRef: String,
+    #[serde(default)]
+    pub door: String,
+    #[serde(default)]
+    pub doorArrivalTime: String,
 }
 
 #[derive(Deserialize)]
@@ -359,11 +364,11 @@ pub fn get_allowed_fields(role: &str) -> Option<Vec<&'static str>> {
     permissions.insert("supervisor", vec![
         "hour", "dockCode", "adjustedStartTime", "scheduleEndDate",
         "scheduleEndTime", "scac", "statusOX", "trailer1", "trailer2",
-        "gateArrivalTime", "actualStartTime", "actualEndTime", "door"
+        "gateArrivalTime", "actualStartTime", "actualEndTime", "door", "doorArrivalTime"
     ]);
     permissions.insert("clerk", vec![
         "gateArrivalTime", "actualStartTime", "actualEndTime",
-        "door", "dockComments"
+        "door", "doorArrivalTime", "dockComments"
     ]);
     permissions.insert("receiving", vec!["statusOX"]);
     permissions.insert("mfu", vec!["ryderComments"]);
@@ -528,6 +533,31 @@ pub struct UpdateUserRequest {
     pub slack_id:  String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AuditEvent {
+    pub trailer_uuid: String,
+    pub field:        String,
+    pub old_value:    String,
+    pub new_value:    String,
+    pub timestamp:    String,
+    pub updated_by:   String,
+    pub event_type:   String,
+}
+
+pub fn get_event_type(field: &str) -> &'static str {
+    match field {
+        "hour" | "dockCode" | "scac" | "trailer1" | "trailer2" |
+        "adjustedStartTime" | "scheduleEndDate" | "scheduleEndTime" |
+        "gateArrivalTime" | "actualStartTime" | "actualEndTime" |
+        "statusOX" | "ryderComments" | "gmComments" | "lateComments" |
+        "door" | "doorArrivalTime" | "LiveAdd" => "Trailer Updates",
+        "shift_rolled"                          => "Shift Roll",
+        "hot_part_created" | "hot_part_closed"  => "Hot Parts",
+        "exception_uploaded" | "dycomm_uploaded" => "Uploads",
+        _                                       => "Other",
+    }
+}
+
 pub fn check_fields(role: &str, fields: &[&str]) -> Result<(), Vec<String>> {
     let allowed = get_allowed_fields(role).unwrap_or_default();
     if allowed.contains(&"*") {
@@ -580,6 +610,8 @@ pub fn build_update_query(role: &str, trailer: &TrailerRecord) -> neo4rs::Query 
     if is_admin || allowed.contains(&"ryderComments")     { sets.push("t.ryderComments = $ryderComments") }
     if is_admin || allowed.contains(&"gmComments")        { sets.push("t.gmComments = $gmComments") }
     if is_admin || allowed.contains(&"lateComments")      { sets.push("t.lateComments = $lateComments") }
+    if is_admin || allowed.contains(&"door")              { sets.push("t.door = $door") }
+    if is_admin || allowed.contains(&"doorArrivalTime")   { sets.push("t.doorArrivalTime = $doorArrivalTime") }
 
     let cypher = format!(
         "MATCH (t:LiveTrailer {{uuid: $uuid}}) SET {} RETURN t",
@@ -603,6 +635,8 @@ pub fn build_update_query(role: &str, trailer: &TrailerRecord) -> neo4rs::Query 
         .param("ryderComments",     trailer.ryderComments.clone())
         .param("gmComments",        trailer.gmComments.clone().unwrap_or_default())
         .param("lateComments",      trailer.lateComments.clone().unwrap_or_default())
+        .param("door",              trailer.door.clone())
+        .param("doorArrivalTime",   trailer.doorArrivalTime.clone())
 }
 
 pub async fn late_trailer_service(graph: Arc<Graph>, ws_list: WebSocketList) {
@@ -663,6 +697,8 @@ pub async fn late_trailer_service(graph: Arc<Graph>, ws_list: WebSocketList) {
                             gmComments:        Some(node.get("gmComments").unwrap_or_default()),
                             lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
                             editRef:           String::new(),
+                            door:              node.get("door").unwrap_or_default(),
+                            doorArrivalTime:   node.get("doorArrivalTime").unwrap_or_default(),
                         };
 
                         // ── Broadcast to WS clients ──

@@ -47,7 +47,7 @@ fn make_cookie(name: &'static str, value: String) -> Cookie<'static> {
     c
 }
 
-#[post("/login", format = "json", data = "<login_request>")]
+#[post("/api/login", format = "json", data = "<login_request>")]
 pub async fn login(
     jar: &CookieJar<'_>,
     login_request: Json<LoginRequest>,
@@ -94,7 +94,7 @@ pub async fn login(
     }))
 }
 
-#[post("/register", format = "json", data = "<user>")]
+#[post("/api/register", format = "json", data = "<user>")]
 pub async fn register(
     user: Json<LoginRequest>,
     state: &State<AppState>,
@@ -118,7 +118,7 @@ pub async fn register(
     }
 }
 
-#[post("/refresh")]
+#[post("/api/refresh")]
 pub async fn refresh_token(
     jar: &CookieJar<'_>,
     state: &State<AppState>,
@@ -169,7 +169,7 @@ pub async fn refresh_token(
     }))
 }
 
-#[post("/logout")]
+#[post("/api/logout")]
 pub async fn logout(
     jar: &CookieJar<'_>,
     state: &State<AppState>,

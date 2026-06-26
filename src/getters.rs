@@ -496,6 +496,8 @@ pub async fn get_past_shift(
                     gmComments:        Some(node.get("gmComments").unwrap_or_default()),
                     lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
                     editRef:           node.get("editRef").unwrap_or_default(),
+                    door:              node.get("door").unwrap_or_default(),
+                    doorArrivalTime:   node.get("doorArrivalTime").unwrap_or_default(),
                 });
             }
             if role.0.contains("univ") {
@@ -559,6 +561,8 @@ pub async fn get_live_trailers(
                     gmComments:        Some(node.get("gmComments").unwrap_or_default()),
                     lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
                     editRef:           String::new(),
+                    door:              node.get("door").unwrap_or_default(),
+                    doorArrivalTime:   node.get("doorArrivalTime").unwrap_or_default(),
                 });
             }
 
@@ -642,6 +646,8 @@ pub async fn get_staged_trailers(
                     gmComments:        Some(node.get("gmComments").unwrap_or_default()),
                     lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
                     editRef:           node.get("editRef").unwrap_or_default(),
+                    door:              node.get("door").unwrap_or_default(),
+                    doorArrivalTime:   node.get("doorArrivalTime").unwrap_or_default(),
                 });
             }
             if role.0.contains("univ") {
@@ -1455,6 +1461,55 @@ pub async fn get_hot_parts(
         Err(e) => {
             eprintln!("Failed to get hot parts: {:?}", e);
             Err(Json("Failed to get hot parts"))
+        }
+    }
+}
+
+#[get("/api/get_audit_events/<op_date>")]
+pub async fn get_audit_events(
+    op_date: String,
+    state:   &State<AppState>,
+    _user:   AuthenticatedUser,
+) -> Result<Json<Vec<AuditEvent>>, Json<&'static str>> {
+    let graph = &state.graph;
+
+    let q = query("
+        MATCH (o:OpDate {date: $op_date})-[:HAS_AUDIT]->(a:AuditEvent)
+        OPTIONAL MATCH (t:LiveTrailer {uuid: a.trailer_uuid})
+        OPTIONAL MATCH (r:TrailerRecord {uuid: a.trailer_uuid})
+        RETURN a,
+            CASE
+                WHEN a.trailer_uuid = '' THEN ''
+                WHEN t IS NOT NULL THEN t.lmsAccent + '/' + t.trailer1
+                WHEN r IS NOT NULL THEN r.lmsAccent + '/' + r.trailer1
+                ELSE ''
+            END AS trailer_label
+        ORDER BY a.timestamp ASC
+    ")
+    .param("op_date", op_date);
+
+    match graph.execute(q).await {
+        Ok(mut result) => {
+            let mut events: Vec<AuditEvent> = Vec::new();
+            while let Ok(Some(row)) = result.next().await {
+                let node: Node = row.get("a").map_err(|_| Json("Failed to get audit node"))?;
+                let field: String = node.get("field").unwrap_or_default();
+                let event_type = get_event_type(&field).to_string();
+                events.push(AuditEvent {
+                    trailer_uuid: row.get("trailer_label").unwrap_or_default(),
+                    field,
+                    old_value:    node.get("old_value").unwrap_or_default(),
+                    new_value:    node.get("new_value").unwrap_or_default(),
+                    timestamp:    node.get("timestamp").unwrap_or_default(),
+                    updated_by:   node.get("updated_by").unwrap_or_default(),
+                    event_type,
+                });
+            }
+            Ok(Json(events))
+        }
+        Err(e) => {
+            eprintln!("Failed to get audit events: {:?}", e);
+            Err(Json("Failed to get audit events"))
         }
     }
 }
