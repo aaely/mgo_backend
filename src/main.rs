@@ -12,6 +12,7 @@ mod emailer;
 use rocket::data::ToByteUnit;
 use rocket::{get, routes};
 use rocket::fs::{FileServer, NamedFile};
+use rocket::config::TlsConfig;
 use neo4rs::Graph;
 use structs::{AppState, late_trailer_service, part_monitoring_service};
 use tokio::sync::Mutex;
@@ -39,7 +40,7 @@ fn custom_cors() -> rocket_cors::Cors {
 }
 
 impl AppState {
-    pub async fn new() -> Self {
+    pub async fn new(use_https: bool) -> Self {
         let graph = Graph::new("bolt://localhost:7687", "neo4j", "Asdf123$").await.unwrap();
 
         AppState {
@@ -48,6 +49,7 @@ impl AppState {
             jwt_secret: "tO7E8uCjD5rXpQl0FhKwV2yMz4bJnAi9sGeR3kTzXvNmPuLsDq8W".to_string(),
             alerted_parts: Arc::new(Mutex::new(HashMap::new())),
             edit_refs:     Arc::new(Mutex::new(HashMap::new())),
+            use_https,
         }
     }
 }
@@ -60,21 +62,29 @@ async fn spa_fallback() -> Option<NamedFile> {
 #[rocket::main]
 async fn main() {
     dotenvy::dotenv().ok();
-    let state = AppState::new().await;
+    let use_https = std::env::args().any(|a| a == "--https");
+    let state = AppState::new(use_https).await;
 
-
-    // Configure CORS
     let cors = custom_cors();
 
-    rocket::custom(
+    let rocket_config = if use_https {
+        rocket::Config {
+            address: "0.0.0.0".parse().expect("Invalid IP address"),
+            port: 8443,
+            tls: Some(TlsConfig::from_paths("cert.pem", "key.pem")),
+            limits: rocket::data::Limits::new().limit("json", 50.mebibytes()),
+            ..rocket::Config::default()
+        }
+    } else {
         rocket::Config {
             address: "0.0.0.0".parse().expect("Invalid IP address"),
             port: 8000,
-            limits: rocket::data::Limits::new()
-                .limit("json", 50.mebibytes()), 
+            limits: rocket::data::Limits::new().limit("json", 50.mebibytes()),
             ..rocket::Config::default()
         }
-    )
+    };
+
+    rocket::custom(rocket_config)
         .attach(cors)
         .attach(AdHoc::on_liftoff("Start Background Services", |rocket| Box::pin(async move {
             let state = rocket.state::<AppState>().unwrap();
@@ -82,10 +92,11 @@ async fn main() {
             let graph = state.graph.clone();
             let jwt_secret  = state.jwt_secret.clone();
             let ws_graph    = state.graph.clone();
+            let use_https   = state.use_https;
 
             // WebSocket server
             tokio::spawn(async move {
-                if let Err(e) = run_ws_server(ws_list.clone(), jwt_secret, ws_graph).await {
+                if let Err(e) = run_ws_server(ws_list.clone(), jwt_secret, ws_graph, use_https).await {
                     println!("Error in WebSocket server: {}", e);
                 }
             });
@@ -164,6 +175,9 @@ async fn main() {
             send_email_route,
             logout,
             get_audit_events,
+            wipe_password,
+            reset_password,
+            change_password,
             spa_fallback
             ])
         .manage(state)

@@ -246,8 +246,8 @@ pub struct AppState {
     pub jwt_secret: String,
     pub ws_list: WebSocketList,
     pub alerted_parts: Arc<Mutex<HashMap<String, chrono::DateTime<chrono::Local>>>>,
-    // username → { editRef → trailer_uuid }
     pub edit_refs: Arc<Mutex<HashMap<String, HashMap<String, String>>>>,
+    pub use_https: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -542,6 +542,25 @@ pub struct AuditEvent {
     pub timestamp:    String,
     pub updated_by:   String,
     pub event_type:   String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct WipePasswordRequest {
+    pub username: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ResetPasswordRequest {
+    pub username:     String,
+    pub token:        String,
+    pub new_password: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ChangePasswordRequest {
+    pub username:     String,
+    pub old_password: String,
+    pub new_password: String,
 }
 
 pub fn get_event_type(field: &str) -> &'static str {

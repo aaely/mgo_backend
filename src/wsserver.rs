@@ -2,7 +2,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use futures_util::{StreamExt, SinkExt};
 use rocket::{get, State};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::{
     accept_hdr_async, WebSocketStream,
     tungstenite::{
@@ -11,6 +12,8 @@ use tokio_tungstenite::{
         handshake::server::{Request as WsRequest, Response as WsResponse},
     },
 };
+use native_tls::{Identity, TlsAcceptor};
+use tokio_native_tls::TlsAcceptor as AsyncTlsAcceptor;
 use neo4rs::Graph;
 use crate::auth::decode_token;
 use crate::structs::{AppState, IncomingMessage, WebSocketList};
@@ -20,8 +23,9 @@ pub async fn ws_handler(state: &State<AppState>) -> Result<(), rocket::http::Sta
     let ws_list    = state.ws_list.clone();
     let jwt_secret = state.jwt_secret.clone();
     let graph      = state.graph.clone();
+    let use_https  = state.use_https;
     tokio::spawn(async move {
-        if let Err(e) = run_ws_server(ws_list, jwt_secret, graph).await {
+        if let Err(e) = run_ws_server(ws_list, jwt_secret, graph, use_https).await {
             println!("Error in WebSocket server: {}", e);
         }
     });
@@ -29,75 +33,97 @@ pub async fn ws_handler(state: &State<AppState>) -> Result<(), rocket::http::Sta
 }
 
 pub async fn run_ws_server(
-    ws_list: WebSocketList,
+    ws_list:    WebSocketList,
     jwt_secret: String,
-    graph: Arc<Graph>,
+    graph:      Arc<Graph>,
+    use_https:  bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let listener = TcpListener::bind("0.0.0.0:9001").await?;
-    println!("WebSocket server listening on ws://0.0.0.0:9001");
+    let tls_acceptor: Option<AsyncTlsAcceptor> = if use_https {
+        let cert     = std::fs::read("cert.pem")?;
+        let key      = std::fs::read("key.pem")?;
+        let identity = Identity::from_pkcs8(&cert, &key)?;
+        Some(AsyncTlsAcceptor::from(TlsAcceptor::builder(identity).build()?))
+    } else {
+        None
+    };
+
+    let port = if use_https { 8443 } else { 9001 };
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
+    println!(
+        "WebSocket server listening on {}://0.0.0.0:{}",
+        if use_https { "wss" } else { "ws" },
+        port
+    );
 
     while let Ok((stream, _)) = listener.accept().await {
         let peer_addr = stream.peer_addr().expect("connected streams should have a peer address");
-        let secret = jwt_secret.clone();
+        let secret    = jwt_secret.clone();
+        let ws_list   = ws_list.clone();
+        let graph     = graph.clone();
+        let acceptor  = tls_acceptor.clone();
 
-        let ws_stream = match accept_hdr_async(stream, move |req: &WsRequest, res: WsResponse| {
-            let token = req.headers()
-                .get("Cookie")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|cookies| {
-                    cookies.split(';').find_map(|pair| {
-                        let pair = pair.trim();
-                        pair.strip_prefix("access_token=").map(|v| v.to_string())
-                    })
-                });
-
-            match token.filter(|t| decode_token(t, &secret).is_ok()) {
-                Some(_) => Ok(res),
-                None => {
-                    let err = tokio_tungstenite::tungstenite::http::Response::builder()
-                        .status(StatusCode::UNAUTHORIZED)
-                        .body(None)
-                        .unwrap();
-                    Err(err)
+        tokio::spawn(async move {
+            if let Some(acceptor) = acceptor {
+                let tls_stream = match acceptor.accept(stream).await {
+                    Ok(s)  => s,
+                    Err(e) => { println!("TLS handshake failed from {}: {:?}", peer_addr, e); return; }
+                };
+                match do_ws_handshake(tls_stream, secret).await {
+                    Ok(ws) => handle_connection(ws, peer_addr, ws_list, graph).await,
+                    Err(e) => println!("Connection from {} rejected: {:?}", peer_addr, e),
+                }
+            } else {
+                match do_ws_handshake(stream, secret).await {
+                    Ok(ws) => handle_connection(ws, peer_addr, ws_list, graph).await,
+                    Err(e) => println!("Connection from {} rejected: {:?}", peer_addr, e),
                 }
             }
-        }).await {
-            Ok(ws) => ws,
-            Err(e) => {
-                println!("Connection from {} rejected: {:?}", peer_addr, e);
-                continue;
-            }
-        };
-
-        println!("WebSocket connection accepted from {}", peer_addr);
-        tokio::spawn(handle_connection(
-            ws_stream,
-            peer_addr,
-            ws_list.clone(),
-            graph.clone(),
-        ));
+        });
     }
 
     Ok(())
 }
 
-async fn send_to_peer(ws_list: &WebSocketList, peer_addr: SocketAddr, msg: IncomingMessage) {
-    if let Ok(text) = serde_json::to_string(&msg) {
-        let list = ws_list.lock().await;
-        if let Some(sender) = list.get(&peer_addr) {
-            let _ = sender.send(Message::Text(text));
+async fn do_ws_handshake<S>(
+    stream: S,
+    secret: String,
+) -> Result<WebSocketStream<S>, tokio_tungstenite::tungstenite::Error>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    accept_hdr_async(stream, move |req: &WsRequest, res: WsResponse| {
+        let token = req.headers()
+            .get("Cookie")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|cookies| {
+                cookies.split(';').find_map(|pair| {
+                    let pair = pair.trim();
+                    pair.strip_prefix("f126f1b7d90a5bd5=").map(|v| v.to_string())
+                })
+            });
+
+        match token.filter(|t| decode_token(t, &secret).is_ok()) {
+            Some(_) => Ok(res),
+            None => {
+                let err = tokio_tungstenite::tungstenite::http::Response::builder()
+                    .status(StatusCode::UNAUTHORIZED)
+                    .body(None)
+                    .unwrap();
+                Err(err)
+            }
         }
-    }
+    }).await
 }
 
-async fn handle_connection(
-    ws_stream: WebSocketStream<TcpStream>,
+async fn handle_connection<S>(
+    ws_stream: WebSocketStream<S>,
     peer_addr: SocketAddr,
-    ws_list: WebSocketList,
-    _graph: Arc<Graph>,
-) {
+    ws_list:   WebSocketList,
+    _graph:    Arc<Graph>,
+) where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
-
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
     {
@@ -118,7 +144,6 @@ async fn handle_connection(
                             Ok(incoming_message) => {
                                 match incoming_message.r#type.as_str() {
                                     "ping" => {
-                                        // Keep-alive only — auth is enforced at connect time.
                                         continue;
                                     }
                                     "trailer_update" => {
