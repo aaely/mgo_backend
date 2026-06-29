@@ -1,5 +1,5 @@
 use crate::structs::*;
-use crate::auth::AuthenticatedUser;
+use crate::auth::{AuthenticatedUser, AdminOrManager};
 use crate::role::Role;
 use crate::helpers::*;
 use rocket::{get, post, serde::json::Json, State};
@@ -13,6 +13,10 @@ pub async fn get_lms(
     _user: AuthenticatedUser,
     role: Role,
 ) -> Result<Json<Vec<LMSRecord>>, Json<&'static str>> {
+
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err(Json("Forbidden"));
+    }
     
     let graph = &state.graph;
 
@@ -26,22 +30,20 @@ pub async fn get_lms(
             let mut data: Vec<LMSRecord> = Vec::<LMSRecord>::new();
             while let Ok(Some(record)) = result.next().await {
                 let lms_node: Node = record.get("l").unwrap();
-                    let load_no: String = lms_node.get("load_no").unwrap_or_default();
-                    let route_id: String = lms_node.get("route_id").unwrap_or_default();
-                    let scac: String = lms_node.get("scac").unwrap_or_default();
-                    let trailer: String = lms_node.get("trailer").unwrap_or_default();
-                    let trailer2: String = lms_node.get("trailer2").unwrap_or_default();
-                    let location: String = lms_node.get("location").unwrap_or_default();
-                    let schedule_arrival_time: String = lms_node.get("schedule_arrival_time").unwrap_or_default();
-
                 let rec = LMSRecord {
-                    load_no,
-                    route_id,
-                    scac,
-                    trailer,
-                    trailer2,
-                    schedule_arrival_time,
-                    location
+                    load_no:               lms_node.get("load_no").unwrap_or_default(),
+                    location:              lms_node.get("location").unwrap_or_default(),
+                    dock:                  lms_node.get("dock").unwrap_or_default(),
+                    route_id:              lms_node.get("route_id").unwrap_or_default(),
+                    route_ver:             lms_node.get("route_ver").unwrap_or_default(),
+                    scac:                  lms_node.get("scac").unwrap_or_default(),
+                    status:                lms_node.get("status").unwrap_or_default(),
+                    trailer:               lms_node.get("trailer").unwrap_or_default(),
+                    trailer2:              lms_node.get("trailer2").unwrap_or_default(),
+                    schedule_start_time:   lms_node.get("schedule_start_time").unwrap_or_default(),
+                    schedule_arrival_time: lms_node.get("schedule_arrival_time").unwrap_or_default(),
+                    actual_start_time:     lms_node.get("actual_start_time").unwrap_or_default(),
+                    actual_end_time:       lms_node.get("actual_end_time").unwrap_or_default(),
                 };
                 data.push(rec);
             }
@@ -54,12 +56,66 @@ pub async fn get_lms(
     }
 }
 
+#[get("/api/get_lms_by_route?<route>")]
+pub async fn get_lms_by_route(
+    route: &str,
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+    role: Role,
+) -> Result<Json<Vec<LMSRecord>>, Json<&'static str>> {
+
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err(Json("Forbidden"));
+    }
+
+    let graph = &state.graph;
+
+    let q = query("
+        MATCH (l:LMSRecord)
+        WHERE toLower(l.route_id) CONTAINS toLower($route)
+        RETURN l
+    ").param("route", route);
+
+    match graph.execute(q).await {
+        Ok(mut result) => {
+            let mut data: Vec<LMSRecord> = Vec::new();
+            while let Ok(Some(record)) = result.next().await {
+                let lms_node: Node = record.get("l").unwrap();
+                data.push(LMSRecord {
+                    load_no:               lms_node.get("load_no").unwrap_or_default(),
+                    location:              lms_node.get("location").unwrap_or_default(),
+                    dock:                  lms_node.get("dock").unwrap_or_default(),
+                    route_id:              lms_node.get("route_id").unwrap_or_default(),
+                    route_ver:             lms_node.get("route_ver").unwrap_or_default(),
+                    scac:                  lms_node.get("scac").unwrap_or_default(),
+                    status:                lms_node.get("status").unwrap_or_default(),
+                    trailer:               lms_node.get("trailer").unwrap_or_default(),
+                    trailer2:              lms_node.get("trailer2").unwrap_or_default(),
+                    schedule_start_time:   lms_node.get("schedule_start_time").unwrap_or_default(),
+                    schedule_arrival_time: lms_node.get("schedule_arrival_time").unwrap_or_default(),
+                    actual_start_time:     lms_node.get("actual_start_time").unwrap_or_default(),
+                    actual_end_time:       lms_node.get("actual_end_time").unwrap_or_default(),
+                });
+            }
+            Ok(Json(data))
+        },
+        Err(e) => {
+            println!("Failed to run get_lms_by_route: {:?}", e);
+            Err(Json("Internal Server Error"))
+        }
+    }
+}
+
 #[get("/api/get_part_info")]
 pub async fn get_part_info(
     state: &State<AppState>,
     _user: AuthenticatedUser,
     role: Role,
 ) -> Result<Json<Vec<PartInfo>>, Json<&'static str>> {
+
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err(Json("Forbidden"));
+    }
 
     let graph = &state.graph;
 
@@ -106,6 +162,11 @@ pub async fn get_dy(
     _user: AuthenticatedUser,
     role: Role,
 ) -> Result<Json<Vec<DyCommLogEntry>>, Json<&'static str>> {
+
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err(Json("Forbidden"));
+    }
+
     let graph = &state.graph;
 
     let q = query("
@@ -150,6 +211,10 @@ pub async fn get_io(
     role: Role,
 ) -> Result<Json<Vec<IOResponse>>, Json<&'static str>> {
     
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err(Json("Forbidden"));
+    }
+
     let graph = &state.graph;
 
     let query = query("
@@ -221,6 +286,11 @@ pub async fn get_exceptions(
     _user: AuthenticatedUser,
     role: Role,
 ) -> Result<Json<Vec<ExceptionLogEntry>>, Json<&'static str>> {
+
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err(Json("Forbidden"));
+    }
+
     let graph = &state.graph;
 
     let query = query("
@@ -275,7 +345,12 @@ pub async fn get_delivered(
     state: &State<AppState>,
     _user: AuthenticatedUser,
     role: Role,
-) -> Result<Json<Vec<Delivered>>, Json<&'static str>> {  // ← correct return type
+) -> Result<Json<Vec<Delivered>>, Json<&'static str>> {  
+    
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err(Json("Forbidden"));
+    }
+
     let graph = &state.graph;
 
     let mut created_lines = Vec::<Delivered>::new();  // ← mut
@@ -326,6 +401,11 @@ pub async fn get_trailers_grouped(
     _user: AuthenticatedUser,
     role: Role,
 ) -> Result<Json<serde_json::Value>, Json<&'static str>> {
+
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err(Json("Forbidden"));
+    }
+
     let graph = &state.graph;
 
     let query = query("
@@ -501,7 +581,7 @@ pub async fn get_past_shift(
                 });
             }
             if role.0.contains("univ") {
-                records.retain(|r| r.dockCode == "Y");
+                records.retain(|r| r.dockCode == "U");
             }
             if role.0.contains("vaa") {
                 records.retain(|r| r.dockCode == "V");
@@ -668,7 +748,13 @@ pub async fn get_staged_trailers(
 #[get("/api/get_users")]
 pub async fn get_users(
     state: &State<AppState>,
+    role:  Role,
 ) -> Result<Json<Vec<ShiftAssignment>>, Json<&'static str>> {
+
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err(Json("Forbidden"));
+    }
+
     let graph = &state.graph;
 
     let q = query("MATCH (u:User) RETURN u");
@@ -796,7 +882,13 @@ pub async fn get_shift_detail(
     start_date: String,
     offset:     u64,
     state:      &State<AppState>,
+    role:       Role,
 ) -> Result<Json<Vec<ShiftDetail>>, Json<&'static str>> {
+
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err(Json("Forbidden"));
+    }
+
     let graph   = &state.graph;
     let day_key = format!("{}_{}", start_date, offset);
 
@@ -847,7 +939,13 @@ pub async fn get_shift_detail(
 #[get("/api/get_decks")]
 pub async fn get_decks(
     state: &State<AppState>,
+    role:  Role,
 ) -> Result<Json<Vec<String>>, Json<&'static str>> {
+
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err(Json("Forbidden"));
+    }
+
     let graph = &state.graph;
 
     let q = query("MATCH (d:Deck) RETURN d.name AS name ORDER BY d.name");
@@ -873,7 +971,13 @@ pub async fn saturday_counts(
     start_date: String,
     state:      &State<AppState>,
     _user:      AuthenticatedUser,
+    role:       Role,
 ) -> Result<Json<Vec<SaturdayCount>>, Json<&'static str>> {
+
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err(Json("Forbidden"));
+    }
+
     let graph = &state.graph;
 
     // Generate the last 5 week start dates from the given start_date
@@ -925,11 +1029,15 @@ pub async fn saturday_counts(
 
 #[get("/api/get_users_admin")]
 pub async fn get_users_admin(
-    state: &State<AppState>,
-    _user: AuthenticatedUser,
-    role:  Role,
+    state:  &State<AppState>,
+    _guard: AdminOrManager,
+    role: Role,
 ) -> Result<Json<Vec<UpdateUserRequest>>, Json<&'static str>> {
-    if role.0 != "admin" && role.0 != "manager" {
+
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err(Json("Forbidden"));
+    }
+    if !role.0.contains("manager") {
         return Err(Json("Forbidden"));
     }
 
@@ -991,7 +1099,12 @@ pub async fn get_scan_decks(state: &State<AppState>) -> Json<Vec<String>> {
 pub async fn get_scan_parts(
     state: &State<AppState>,
     deck: String,
-) -> Json<Vec<PartASL>> {
+    role: Role,
+) -> Result<Json<Vec<PartASL>>, Json<&'static str>> {
+
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err(Json("Forbidden"));
+    }
 
     let graph = &state.graph;
     let query = neo4rs::query(
@@ -1003,7 +1116,7 @@ pub async fn get_scan_parts(
         Ok(r) => r,
         Err(e) => {
             eprintln!("get_scan_parts error: {e}");
-            return Json(vec![]);
+            return Ok(Json(vec![]));
         }
     };
 
@@ -1029,7 +1142,7 @@ pub async fn get_scan_parts(
         }
     }
 
-    Json(parts)
+    Ok(Json(parts))
 }
 
 #[get("/scan/asn?<deck>&<part>")]
@@ -1346,7 +1459,7 @@ pub async fn get_dock_count(
     let q3 = query("
         MATCH (l:LMSRecord)
         WHERE l.schedule_arrival_time STARTS WITH $date
-          AND l.location = $dock
+          AND l.dock = $dock
           AND substring(l.schedule_arrival_time, 11, 2) = $hour
         RETURN count(l) AS cnt
     ")
@@ -1404,7 +1517,7 @@ pub async fn get_dock_count(
         MATCH (l:LMSRecord)
         WHERE ((l.schedule_arrival_time STARTS WITH $date1 AND substring(l.schedule_arrival_time, 11, 2) IN $hours1)
             OR (l.schedule_arrival_time STARTS WITH $date2 AND substring(l.schedule_arrival_time, 11, 2) IN $hours2))
-          AND l.location = $dock
+          AND l.dock = $dock
         RETURN count(l) AS cnt
     ")
     .param("date1", win.date1.clone())
@@ -1470,7 +1583,13 @@ pub async fn get_audit_events(
     op_date: String,
     state:   &State<AppState>,
     _user:   AuthenticatedUser,
+    role:    Role,
 ) -> Result<Json<Vec<AuditEvent>>, Json<&'static str>> {
+
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err(Json("Forbidden"));
+    }
+
     let graph = &state.graph;
 
     let q = query("

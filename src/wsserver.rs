@@ -69,12 +69,12 @@ pub async fn run_ws_server(
                     Err(e) => { println!("TLS handshake failed from {}: {:?}", peer_addr, e); return; }
                 };
                 match do_ws_handshake(tls_stream, secret).await {
-                    Ok(ws) => handle_connection(ws, peer_addr, ws_list, graph).await,
+                    Ok((ws, role)) => handle_connection(ws, peer_addr, ws_list, graph, role).await,
                     Err(e) => println!("Connection from {} rejected: {:?}", peer_addr, e),
                 }
             } else {
                 match do_ws_handshake(stream, secret).await {
-                    Ok(ws) => handle_connection(ws, peer_addr, ws_list, graph).await,
+                    Ok((ws, role)) => handle_connection(ws, peer_addr, ws_list, graph, role).await,
                     Err(e) => println!("Connection from {} rejected: {:?}", peer_addr, e),
                 }
             }
@@ -87,11 +87,14 @@ pub async fn run_ws_server(
 async fn do_ws_handshake<S>(
     stream: S,
     secret: String,
-) -> Result<WebSocketStream<S>, tokio_tungstenite::tungstenite::Error>
+) -> Result<(WebSocketStream<S>, String), tokio_tungstenite::tungstenite::Error>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    accept_hdr_async(stream, move |req: &WsRequest, res: WsResponse| {
+    let captured_role = Arc::new(std::sync::Mutex::new(String::new()));
+    let role_clone    = captured_role.clone();
+
+    let ws = accept_hdr_async(stream, move |req: &WsRequest, res: WsResponse| {
         let token = req.headers()
             .get("Cookie")
             .and_then(|v| v.to_str().ok())
@@ -102,8 +105,11 @@ where
                 })
             });
 
-        match token.filter(|t| decode_token(t, &secret).is_ok()) {
-            Some(_) => Ok(res),
+        match token.and_then(|t| decode_token(&t, &secret).ok()) {
+            Some(claims) => {
+                *role_clone.lock().unwrap() = claims.role;
+                Ok(res)
+            }
             None => {
                 let err = tokio_tungstenite::tungstenite::http::Response::builder()
                     .status(StatusCode::UNAUTHORIZED)
@@ -112,7 +118,10 @@ where
                 Err(err)
             }
         }
-    }).await
+    }).await?;
+
+    let role = captured_role.lock().unwrap().clone();
+    Ok((ws, role))
 }
 
 async fn handle_connection<S>(
@@ -120,6 +129,7 @@ async fn handle_connection<S>(
     peer_addr: SocketAddr,
     ws_list:   WebSocketList,
     _graph:    Arc<Graph>,
+    role:      String,
 ) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -128,7 +138,7 @@ async fn handle_connection<S>(
 
     {
         let mut list = ws_list.lock().await;
-        list.insert(peer_addr, tx);
+        list.insert(peer_addr, (tx, role));
         println!("Added {} to WebSocket list. Total clients: {}", peer_addr, list.len());
     }
 
@@ -166,7 +176,7 @@ async fn handle_connection<S>(
                                 let response = Message::Text(serde_json::to_string(&incoming_message).unwrap());
                                 let list = ws_list_incoming.lock().await;
                                 println!("Broadcasting message to {} clients", list.len());
-                                for sender in list.values() {
+                                for (sender, _role) in list.values() {
                                     if sender.send(response.clone()).is_err() {
                                         println!("Failed to send message to {}", peer_addr);
                                     }

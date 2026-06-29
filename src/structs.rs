@@ -7,7 +7,7 @@ use neo4rs::{Graph, Node, query};
 use crate::helpers::*;
 
 
-pub type WebSocketList = Arc<Mutex<HashMap<SocketAddr, UnboundedSender<Message>>>>;
+pub type WebSocketList = Arc<Mutex<HashMap<SocketAddr, (UnboundedSender<Message>, String)>>>;
 
 #[derive(Serialize, Deserialize, PartialEq, Default, Debug)]
 pub struct InTransit {
@@ -38,13 +38,19 @@ pub struct Schedule {
 
 #[derive(Serialize, Deserialize, PartialEq, Default, Debug)]
 pub struct LMSRecord {
-    pub load_no: String,
-    pub route_id: String,
-    pub scac: String,
-    pub trailer: String,
-    pub trailer2: String,
+    pub load_no:               String,
+    pub location:              String,
+    pub dock:                  String,
+    pub route_id:              String,
+    pub route_ver:             String,
+    pub scac:                  String,
+    pub status:                String,
+    pub trailer:               String,
+    pub trailer2:              String,
+    pub schedule_start_time:   String,
     pub schedule_arrival_time: String,
-    pub location: String,
+    pub actual_start_time:     String,
+    pub actual_end_time:       String,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Default, Debug)]
@@ -550,6 +556,11 @@ pub struct WipePasswordRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct ForgotPasswordRequest {
+    pub username: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ResetPasswordRequest {
     pub username:     String,
     pub token:        String,
@@ -728,7 +739,7 @@ pub async fn late_trailer_service(graph: Arc<Graph>, ws_list: WebSocketList) {
                             };
                             if let Ok(message) = serde_json::to_string(&ws_msg) {
                                 let ws_list = ws_list.lock().await;
-                                for (_, tx) in ws_list.iter() {
+                                for (_, (tx, _)) in ws_list.iter() {
                                     let _ = tx.send(Message::Text(message.clone()));
                                 }
                             }
@@ -1232,7 +1243,7 @@ pub async fn part_monitoring_service(
             };
             if let Ok(message) = serde_json::to_string(&ws_msg) {
                 let ws_list = ws_list.lock().await;
-                for (_, tx) in ws_list.iter() {
+                for (_, (tx, _)) in ws_list.iter() {
                     let _ = tx.send(Message::Text(message.clone()));
                 }
             }

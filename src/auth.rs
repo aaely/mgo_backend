@@ -36,3 +36,51 @@ impl<'r> FromRequest<'r> for AuthenticatedUser {
         Outcome::Error((Status::Unauthorized, ()))
     }
 }
+
+pub struct AdminOrManager(pub Claims);
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for AdminOrManager {
+    type Error = ();
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        match AuthenticatedUser::from_request(request).await {
+            Outcome::Success(u) if matches!(u.0.role.as_str(), "admin" | "manager") =>
+                Outcome::Success(AdminOrManager(u.0)),
+            Outcome::Success(_) => Outcome::Error((Status::Forbidden, ())),
+            _ => Outcome::Error((Status::Unauthorized, ())),
+        }
+    }
+}
+
+pub struct AdminOnly(pub Claims);
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for AdminOnly {
+    type Error = ();
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        match AuthenticatedUser::from_request(request).await {
+            Outcome::Success(u) if u.0.role == "admin" =>
+                Outcome::Success(AdminOnly(u.0)),
+            Outcome::Success(_) => Outcome::Error((Status::Forbidden, ())),
+            _ => Outcome::Error((Status::Unauthorized, ())),
+        }
+    }
+}
+
+pub struct AdminOrSupervisor(pub Claims);
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for AdminOrSupervisor {
+    type Error = ();
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
+        match AuthenticatedUser::from_request(request).await {
+            Outcome::Success(u) if matches!(u.0.role.as_str(), "admin" | "supervisor") =>
+                Outcome::Success(AdminOrSupervisor(u.0)),
+            Outcome::Success(_) => Outcome::Error((Status::Forbidden, ())),
+            _ => Outcome::Error((Status::Unauthorized, ())),
+        }
+    }
+}

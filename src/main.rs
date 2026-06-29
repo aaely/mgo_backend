@@ -131,6 +131,7 @@ async fn main() {
             login,
             update_user,
             get_lms,
+            get_lms_by_route,
             get_users_admin,
             get_dy,
             get_trailers_grouped,
@@ -176,6 +177,7 @@ async fn main() {
             logout,
             get_audit_events,
             wipe_password,
+            forgot_password,
             reset_password,
             change_password,
             spa_fallback

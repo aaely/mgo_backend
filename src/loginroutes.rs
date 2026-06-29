@@ -1,6 +1,7 @@
 use crate::structs::*;
-use crate::auth::{Claims, AuthenticatedUser};
+use crate::auth::{Claims, AuthenticatedUser, AdminOrManager};
 use crate::role::Role;
+use crate::helpers::send_email;
 use rocket::{post, serde::json::Json, State};
 use rocket::http::{Cookie, CookieJar, SameSite};
 use neo4rs::{query, Node};
@@ -232,15 +233,10 @@ pub async fn logout(
 
 #[post("/api/wipe_password", format = "json", data = "<req>")]
 pub async fn wipe_password(
-    req:   Json<WipePasswordRequest>,
-    state: &State<AppState>,
-    _user: AuthenticatedUser,
-    role:  Role,
+    req:    Json<WipePasswordRequest>,
+    state:  &State<AppState>,
+    _guard: AdminOrManager,
 ) -> Result<Json<String>, (Status, Json<String>)> {
-    if role.0 != "admin" && role.0 != "manager" {
-        return Err((Status::Forbidden, Json("Forbidden".to_string())));
-    }
-
     let token      = uuid::Uuid::new_v4().to_string();
     let expires_at = Utc::now()
         .checked_add_signed(Duration::hours(24))
@@ -346,3 +342,52 @@ pub async fn change_password(
 
     Ok(Json("Password changed successfully"))
 }
+
+#[post("/api/forgot_password", format = "json", data = "<req>")]
+pub async fn forgot_password(
+    req:   Json<ForgotPasswordRequest>,
+    state: &State<AppState>,
+) -> Result<Json<&'static str>, (Status, Json<String>)> {
+    // Verify the user actually exists before doing anything
+    let mut result = state.graph.execute(
+        query("MATCH (u:User {name: $username}) RETURN u")
+            .param("username", req.username.clone()),
+    ).await.map_err(|e| (Status::InternalServerError, Json(e.to_string())))?;
+
+    if result.next().await.map_err(|e| (Status::InternalServerError, Json(e.to_string())))?.is_none() {
+        // Return success anyway to avoid username enumeration
+        return Ok(Json("If that account exists, a code has been sent"));
+    }
+
+    // 6-digit numeric code derived from UUID randomness
+    let bytes = uuid::Uuid::new_v4().as_bytes().to_owned();
+    let code = format!("{:06}", u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) % 1_000_000);
+
+    let expires_at = Utc::now()
+        .checked_add_signed(Duration::minutes(15))
+        .expect("valid timestamp")
+        .timestamp();
+
+    state.graph.run(
+        query("
+            MERGE (r:PasswordResetToken {username: $username})
+            SET r.token = $token, r.expires_at = $expires_at
+        ")
+        .param("username",   req.username.clone())
+        .param("token",      code.clone())
+        .param("expires_at", expires_at),
+    ).await.map_err(|e| (Status::InternalServerError, Json(e.to_string())))?;
+
+    let body = format!(
+        "Your MODMS password reset code is: {}\n\nThis code expires in 15 minutes.",
+        code
+    );
+
+    if let Err(e) = send_email(&req.username, "MODMS Password Reset", body).await {
+        eprintln!("Failed to send reset email: {:?}", e);
+        return Err((Status::InternalServerError, Json("Failed to send reset email".to_string())));
+    }
+
+    Ok(Json("If that account exists, a code has been sent"))
+}
+

@@ -1,5 +1,5 @@
 use crate::structs::*;
-use crate::auth::AuthenticatedUser;
+use crate::auth::{AuthenticatedUser, AdminOrManager, AdminOnly, AdminOrSupervisor};
 use crate::role::Role;
 use tokio_tungstenite::tungstenite::Message;
 use rocket::{State, delete, post, serde::json::Json};
@@ -171,22 +171,34 @@ pub async fn upload_lms(
         let query = query("
         CREATE(l:LMSRecord {
             load_no: $load_no,
+            location: $location,
+            dock: $dock,
             route_id: $route_id,
+            route_ver: $route_ver,
             scac: $scac,
+            status: $status,
             trailer: $trailer,
             trailer2: $trailer2,
-            location: $location,
-            schedule_arrival_time: $schedule_arrival_time
+            schedule_start_time: $schedule_start_time,
+            schedule_arrival_time: $schedule_arrival_time,
+            actual_start_time: $actual_start_time,
+            actual_end_time: $actual_end_time
         })
         RETURN l
     ")
-    .param("load_no", line.load_no.clone())
-    .param("route_id", line.route_id.clone())
-    .param("scac", line.scac.clone())
-    .param("trailer", line.trailer.clone())
-    .param("trailer2", line.trailer2.clone())
-    .param("location", line.location.clone())
-    .param("schedule_arrival_time", line.schedule_arrival_time.clone());
+    .param("load_no",               line.load_no.clone())
+    .param("location",              line.location.clone())
+    .param("dock",                  line.dock.clone())
+    .param("route_id",              line.route_id.clone())
+    .param("route_ver",             line.route_ver.clone())
+    .param("scac",                  line.scac.clone())
+    .param("status",                line.status.clone())
+    .param("trailer",               line.trailer.clone())
+    .param("trailer2",              line.trailer2.clone())
+    .param("schedule_start_time",   line.schedule_start_time.clone())
+    .param("schedule_arrival_time", line.schedule_arrival_time.clone())
+    .param("actual_start_time",     line.actual_start_time.clone())
+    .param("actual_end_time",       line.actual_end_time.clone());
 
         match graph.execute(query).await {
             Ok(mut result) => {
@@ -194,24 +206,21 @@ pub async fn upload_lms(
                     let lms_node: Node = row.get("l").map_err(|_| {
                         Json("Failed to get node from record")
                     })?;
-                    
-                    // Extract all fields
-                    let load_no: String = lms_node.get("load_no").unwrap_or_default();
-                    let route_id: String = lms_node.get("route_id").unwrap_or_default();
-                    let scac: String = lms_node.get("scac").unwrap_or_default();
-                    let trailer: String = lms_node.get("trailer").unwrap_or_default();
-                    let trailer2: String = lms_node.get("trailer2").unwrap_or_default();
-                    let schedule_arrival_time: String = lms_node.get("schedule_arrival_time").unwrap_or_default();
-                    let location: String = lms_node.get("location").unwrap_or_default();
 
                     let record = LMSRecord {
-                        load_no,
-                        route_id,
-                        scac,
-                        trailer,
-                        trailer2,
-                        schedule_arrival_time,
-                        location,
+                        load_no:               lms_node.get("load_no").unwrap_or_default(),
+                        location:              lms_node.get("location").unwrap_or_default(),
+                        dock:                  lms_node.get("dock").unwrap_or_default(),
+                        route_id:              lms_node.get("route_id").unwrap_or_default(),
+                        route_ver:             lms_node.get("route_ver").unwrap_or_default(),
+                        scac:                  lms_node.get("scac").unwrap_or_default(),
+                        status:                lms_node.get("status").unwrap_or_default(),
+                        trailer:               lms_node.get("trailer").unwrap_or_default(),
+                        trailer2:              lms_node.get("trailer2").unwrap_or_default(),
+                        schedule_start_time:   lms_node.get("schedule_start_time").unwrap_or_default(),
+                        schedule_arrival_time: lms_node.get("schedule_arrival_time").unwrap_or_default(),
+                        actual_start_time:     lms_node.get("actual_start_time").unwrap_or_default(),
+                        actual_end_time:       lms_node.get("actual_end_time").unwrap_or_default(),
                     };
                     created_lines.push(record);
                 }
@@ -448,6 +457,11 @@ pub async fn upload_dycomm(
     user: AuthenticatedUser,
     role: Role,
 ) -> Result<Json<Vec<DyCommLogEntry>>, Json<&'static str>> {
+
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err(Json("Forbidden"));
+    }
+
     let graph = &state.graph;
     let mut created_lines = Vec::<DyCommLogEntry>::new();
 
@@ -675,17 +689,19 @@ pub async fn delivered(
 
 #[post("/api/roll_next_shift", format = "json", data = "<req>")]
 pub async fn roll_next_shift(
-    req: Json<RollNextShiftRequest>,
-    state: &State<AppState>,
-    user: AuthenticatedUser,
-    role: Role,
+    req:    Json<RollNextShiftRequest>,
+    state:  &State<AppState>,
+    user:   AuthenticatedUser,
+    _guard: AdminOrManager,
+    role:   Role,
 ) -> Result<Json<&'static str>, Json<&'static str>> {
+
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err(Json("Forbidden"));
+    }
+
     let graph = &state.graph;
     let operational_date = req.operational_date.clone();
-
-    if role.0 != "admin" && role.0 != "manager" {
-        return Err(Json("Unauthorized: Admin role required"));
-    }
 
     // ── Query 1: Snapshot all LiveTrailers into TrailerRecords ──
     let snapshot_query = query("
@@ -877,6 +893,11 @@ pub async fn push_add_on (
     user:   AuthenticatedUser,
     role:   Role,
 ) -> Result<Json<TrailerRecord>, Json<&'static str>> {
+
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err(Json("Forbidden"));
+    }
+
     let graph = &state.graph;
 
     let q = query("
@@ -992,8 +1013,11 @@ pub async fn push_add_on (
                         data: Some(MessageData { message: data }),
                     };
                     if let Ok(message) = serde_json::to_string(&ws_msg) {
+                        let dock = &created.dockCode;
                         let ws_list = state.ws_list.lock().await;
-                        for (_, tx) in ws_list.iter() {
+                        for (_, (tx, role)) in ws_list.iter() {
+                            if role.contains("vaa")  && dock != "V" { continue; }
+                            if role.contains("univ") && dock != "U" { continue; }
                             let _ = tx.send(Message::Text(message.clone()));
                         }
                     }
@@ -1051,12 +1075,13 @@ pub async fn push_add_on (
 #[post("/api/upload_on_deck", format = "json", data = "<upload_on_deck>")]
 pub async fn upload_on_deck(
     upload_on_deck: Json<Vec<TrailerRecord>>,
-    state: &State<AppState>,
-    user: AuthenticatedUser,
-    role: Role,
+    state:          &State<AppState>,
+    user:           AuthenticatedUser,
+    _guard:         AdminOrSupervisor,
+    role:           Role,
 ) -> Result<Json<Vec<TrailerRecord>>, Json<&'static str>> {
 
-    if role.0 != "admin" && role.0 != "supervisor" {
+    if role.0.contains("vaa") || role.0.contains("univ") {
         return Err(Json("Forbidden"));
     }
 
@@ -1340,6 +1365,10 @@ pub async fn update_live_trailer(
 ) -> Result<Json<TrailerRecord>, Json<&'static str>> {
     let graph = &state.graph;
 
+    if role.0.contains("vaa")  && trailer_info.dockCode != "V" { return Err(Json("Forbidden")) }
+    if role.0.contains("univ") && trailer_info.dockCode != "U" { return Err(Json("Forbidden")) }
+
+
     // Resolve editRef → real uuid from the per-user session map
     let user_edit_ref = trailer_info.editRef.clone();
     let uuid = {
@@ -1435,8 +1464,11 @@ pub async fn update_live_trailer(
                         data: Some(MessageData { message: data.to_string() }),
                     };
                     if let Ok(message) = serde_json::to_string(&ws_msg) {
+                        let dock = &updated.dockCode;
                         let ws_list = state.ws_list.lock().await;
-                        for (_, tx) in ws_list.iter() {
+                        for (_, (tx, role)) in ws_list.iter() {
+                            if role.contains("vaa")  && dock != "V" { continue; }
+                            if role.contains("univ") && dock != "U" { continue; }
                             let _ = tx.send(Message::Text(message.clone()));
                         }
                     }
@@ -2042,15 +2074,10 @@ pub async fn upload_part_out(
 
 #[post("/api/update_user", format = "json", data = "<req>")]
 pub async fn update_user(
-    req:   Json<UpdateUserRequest>,
-    state: &State<AppState>,
-    _user: AuthenticatedUser,
-    role:  Role,
+    req:    Json<UpdateUserRequest>,
+    state:  &State<AppState>,
+    _guard: AdminOrManager,
 ) -> Result<Json<&'static str>, Json<&'static str>> {
-    if role.0 != "admin" && role.0 != "manager" {
-        return Err(Json("Forbidden"));
-    }
-
     let graph = &state.graph;
 
     let q = query("
@@ -2078,15 +2105,10 @@ pub async fn update_user(
 
 #[delete("/api/delete_user", format = "json", data = "<req>")]
 pub async fn delete_user(
-    req:   Json<DeleteUserRequest>,
-    state: &State<AppState>,
-    _user: AuthenticatedUser,
-    role:  Role,
+    req:    Json<DeleteUserRequest>,
+    state:  &State<AppState>,
+    _guard: AdminOnly,
 ) -> Result<Json<&'static str>, Json<&'static str>> {
-    if role.0 != "admin" {
-        return Err(Json("Forbidden"));
-    }
-
     let graph = &state.graph;
 
     let q = query("
@@ -2106,14 +2128,9 @@ pub async fn delete_user(
 #[post("/api/push_reschedules", format = "json", data = "<reschedules>")]
 pub async fn push_reschedules(
     reschedules: Json<Vec<TrailerRecord>>,
-    state: &State<AppState>,
-    _user: AuthenticatedUser,
-    role: Role,
+    state:       &State<AppState>,
+    _guard:      AdminOrSupervisor,
 ) -> Result<Json<&'static str>, Json<&'static str>> {
-    if role.0 != "admin" && role.0 != "supervisor" {
-        return Err(Json("Forbidden"));
-    }
-
     let graph = &state.graph;
 
     for line in reschedules.iter() {
