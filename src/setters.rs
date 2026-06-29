@@ -166,7 +166,12 @@ pub async fn upload_lms(
     let graph = &state.graph;
 
     let mut created_lines: Vec<LMSRecord> = Vec::new();
-    
+
+    if let Err(e) = graph.run(query("MATCH (l:LMSRecord) DELETE l")).await {
+        eprintln!("Failed to wipe LMSRecord nodes: {:?}", e);
+        return Err(Json("Failed to wipe existing LMS records"));
+    }
+
     for line in upload_lms.iter() {
         let query = query("
         CREATE(l:LMSRecord {
