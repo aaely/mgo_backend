@@ -106,6 +106,62 @@ pub async fn get_lms_by_route(
     }
 }
 
+#[get("/api/get_lms_by_load?<load_no>")]
+pub async fn get_lms_by_load(
+    load_no: &str,
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+    role: Role,
+) -> Result<Json<Vec<LMSRecord>>, Json<&'static str>> {
+
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err(Json("Forbidden"));
+    }
+
+    if load_no.trim().is_empty() {
+        return Ok(Json(Vec::new()));
+    }
+
+    let graph = &state.graph;
+
+    let q = query("
+        MATCH (l:LMSRecord)
+        WHERE toLower(l.load_no) STARTS WITH toLower($load_no)
+        RETURN l
+        ORDER BY l.load_no
+        LIMIT 10
+    ").param("load_no", load_no);
+
+    match graph.execute(q).await {
+        Ok(mut result) => {
+            let mut data: Vec<LMSRecord> = Vec::new();
+            while let Ok(Some(record)) = result.next().await {
+                let lms_node: Node = record.get("l").unwrap();
+                data.push(LMSRecord {
+                    load_no:               lms_node.get("load_no").unwrap_or_default(),
+                    location:              lms_node.get("location").unwrap_or_default(),
+                    dock:                  lms_node.get("dock").unwrap_or_default(),
+                    route_id:              lms_node.get("route_id").unwrap_or_default(),
+                    route_ver:             lms_node.get("route_ver").unwrap_or_default(),
+                    scac:                  lms_node.get("scac").unwrap_or_default(),
+                    status:                lms_node.get("status").unwrap_or_default(),
+                    trailer:               lms_node.get("trailer").unwrap_or_default(),
+                    trailer2:              lms_node.get("trailer2").unwrap_or_default(),
+                    schedule_start_time:   lms_node.get("schedule_start_time").unwrap_or_default(),
+                    schedule_arrival_time: lms_node.get("schedule_arrival_time").unwrap_or_default(),
+                    actual_start_time:     lms_node.get("actual_start_time").unwrap_or_default(),
+                    actual_end_time:       lms_node.get("actual_end_time").unwrap_or_default(),
+                });
+            }
+            Ok(Json(data))
+        },
+        Err(e) => {
+            println!("Failed to run get_lms_by_load: {:?}", e);
+            Err(Json("Internal Server Error"))
+        }
+    }
+}
+
 #[get("/api/get_part_info")]
 pub async fn get_part_info(
     state: &State<AppState>,
@@ -603,7 +659,13 @@ pub async fn get_live_trailers(
 ) -> Result<Json<Vec<TrailerRecord>>, Json<&'static str>> {
     let graph = &state.graph;
 
-    let q = query("MATCH (t:LiveTrailer) RETURN t");
+    let q = if role.0.contains("vaa") {
+        query("MATCH (t:LiveTrailer) WHERE t.dockCode = 'V' RETURN t")
+    } else if role.0.contains("univ") {
+        query("MATCH (t:LiveTrailer) WHERE t.dockCode = 'U' RETURN t")
+    } else {
+        query("MATCH (t:LiveTrailer) RETURN t")
+    };
 
     match graph.execute(q).await {
         Ok(mut result) => {
@@ -644,13 +706,6 @@ pub async fn get_live_trailers(
                     door:              node.get("door").unwrap_or_default(),
                     doorArrivalTime:   node.get("doorArrivalTime").unwrap_or_default(),
                 });
-            }
-
-            if role.0.contains("univ") {
-                records.retain(|r| r.dockCode == "U");
-            }
-            if role.0.contains("vaa") {
-                records.retain(|r| r.dockCode == "V");
             }
 
             // Generate a fresh, per-user editRef for each trailer and store the mapping.

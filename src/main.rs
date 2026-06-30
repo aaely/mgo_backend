@@ -132,6 +132,7 @@ async fn main() {
             update_user,
             get_lms,
             get_lms_by_route,
+            get_lms_by_load,
             get_users_admin,
             get_dy,
             get_trailers_grouped,
