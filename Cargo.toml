@@ -16,6 +16,7 @@ serde_json = "1.0"
 lettre = { version = "0.11", features = ["tokio1", "tokio1-native-tls"] }
 jsonwebtoken = "8.1"
 bcrypt = "0.12"
+ldap3 = { version = "0.11", features = ["tokio-native-tls"] }
 chrono = "0.4"
 tokio-tungstenite = "0.15"
 tungstenite = "0.16"

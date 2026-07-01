@@ -23,7 +23,8 @@ impl<'r> FromRequest<'r> for AuthenticatedUser {
     type Error = ();
 
     async fn from_request(request: &'r Request<'_>) -> Outcome<Self, Self::Error> {
-        let secret = "tO7E8uCjD5rXpQl0FhKwV2yMz4bJnAi9sGeR3kTzXvNmPuLsDq8W";
+        let secret = std::env::var("JWT_SECRET").unwrap_or_default();
+        let secret = secret.as_str();
         if let Some(cookie) = request.cookies().get("f126f1b7d90a5bd5") {
             match decode_token(cookie.value(), secret) {
                 Ok(claims) => return Outcome::Success(AuthenticatedUser(claims)),
