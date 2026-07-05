@@ -134,6 +134,7 @@ async fn main() {
             get_edock_asl,
             get_scan_parts,
             login,
+            sso_login,
             update_user,
             get_lms,
             get_lms_by_route,

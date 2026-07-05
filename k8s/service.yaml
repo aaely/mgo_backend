@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mgo-backend-service
+  namespace: mgo
+spec:
+  selector:
+    app: mgo-backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+    - name: ws
+      port: 9001
+      targetPort: 9001
+    # Uncomment if USE_HTTPS=true (pod-level TLS passthrough)
+    # - name: https
+    #   port: 8443
+    #   targetPort: 8443
+  type: ClusterIP

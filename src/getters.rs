@@ -44,6 +44,7 @@ pub async fn get_lms(
                     schedule_arrival_time: lms_node.get("schedule_arrival_time").unwrap_or_default(),
                     actual_start_time:     lms_node.get("actual_start_time").unwrap_or_default(),
                     actual_end_time:       lms_node.get("actual_end_time").unwrap_or_default(),
+                    dock_sequence:         lms_node.get("dock_sequence").unwrap_or_default(),
                 };
                 data.push(rec);
             }
@@ -95,6 +96,7 @@ pub async fn get_lms_by_route(
                     schedule_arrival_time: lms_node.get("schedule_arrival_time").unwrap_or_default(),
                     actual_start_time:     lms_node.get("actual_start_time").unwrap_or_default(),
                     actual_end_time:       lms_node.get("actual_end_time").unwrap_or_default(),
+                    dock_sequence:         lms_node.get("dock_sequence").unwrap_or_default(),
                 });
             }
             Ok(Json(data))
@@ -151,6 +153,7 @@ pub async fn get_lms_by_load(
                     schedule_arrival_time: lms_node.get("schedule_arrival_time").unwrap_or_default(),
                     actual_start_time:     lms_node.get("actual_start_time").unwrap_or_default(),
                     actual_end_time:       lms_node.get("actual_end_time").unwrap_or_default(),
+                    dock_sequence:         lms_node.get("dock_sequence").unwrap_or_default(),
                 });
             }
             Ok(Json(data))

@@ -3,6 +3,34 @@ use rocket::request::{FromRequest, Outcome, Request};
 use rocket::http::Status;
 use serde::{Deserialize, Serialize};
 
+// Username injected by nginx after Kerberos/SPNEGO authentication.
+// Strip domain prefix (DOMAIN\user) or suffix (user@DOMAIN.COM) so the
+// bare username matches what's stored in Neo4j.
+pub struct LDAPUser(pub String);
+
+#[rocket::async_trait]
+impl<'r> FromRequest<'r> for LDAPUser {
+    type Error = ();
+
+    async fn from_request(request: &'r Request<'_>) -> Outcome<Self, ()> {
+        match request.headers().get_one("X-Remote-User") {
+            Some(raw) => {
+                let username = raw
+                    .split('\\').last().unwrap_or(raw)
+                    .split('@').next().unwrap_or(raw)
+                    .trim()
+                    .to_lowercase();
+                if username.is_empty() {
+                    Outcome::Error((Status::Unauthorized, ()))
+                } else {
+                    Outcome::Success(LDAPUser(username))
+                }
+            }
+            None => Outcome::Error((Status::Unauthorized, ())),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Claims {
     pub username: String,

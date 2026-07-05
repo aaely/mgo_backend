@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mgo-backend
+  namespace: mgo
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: mgo-backend
+  template:
+    metadata:
+      labels:
+        app: mgo-backend
+    spec:
+      serviceAccountName: mgo-backend
+      # OpenShift restricts root; run as UID 1001 (group 0 per Dockerfile)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 0
+      containers:
+        - name: mgo-backend
+          image: your-registry/mgo-backend:latest
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: false   # rocket writes nothing to /; flip to true if needed
+          ports:
+            - containerPort: 8000   # HTTP
+            - containerPort: 9001   # WS (plain)
+            # Uncomment if USE_HTTPS=true (pod-level TLS, bypasses Route TLS termination)
+            # - containerPort: 8443  # HTTPS / WSS
+          envFrom:
+            - configMapRef:
+                name: mgo-backend-config
+            - secretRef:
+                name: mgo-backend-secret
+          # TLS cert volume — only needed when USE_HTTPS=true
+          # volumeMounts:
+          #   - name: tls-certs
+          #     mountPath: /app/cert.pem
+          #     subPath: tls.crt
+          #   - name: tls-certs
+          #     mountPath: /app/key.pem
+          #     subPath: tls.key
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+      # volumes:
+      #   - name: tls-certs
+      #     secret:
+      #       secretName: mgo-tls-secret
