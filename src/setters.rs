@@ -187,7 +187,8 @@ pub async fn upload_lms(
             schedule_start_time: $schedule_start_time,
             schedule_arrival_time: $schedule_arrival_time,
             actual_start_time: $actual_start_time,
-            actual_end_time: $actual_end_time
+            actual_end_time: $actual_end_time,
+            dock_sequence: $dock_sequence
         })
         RETURN l
     ")
@@ -203,7 +204,8 @@ pub async fn upload_lms(
     .param("schedule_start_time",   line.schedule_start_time.clone())
     .param("schedule_arrival_time", line.schedule_arrival_time.clone())
     .param("actual_start_time",     line.actual_start_time.clone())
-    .param("actual_end_time",       line.actual_end_time.clone());
+    .param("actual_end_time",       line.actual_end_time.clone())
+    .param("dock_sequence",         line.dock_sequence.clone());
 
         match graph.execute(query).await {
             Ok(mut result) => {
@@ -226,6 +228,7 @@ pub async fn upload_lms(
                         schedule_arrival_time: lms_node.get("schedule_arrival_time").unwrap_or_default(),
                         actual_start_time:     lms_node.get("actual_start_time").unwrap_or_default(),
                         actual_end_time:       lms_node.get("actual_end_time").unwrap_or_default(),
+                        dock_sequence:         lms_node.get("dock_sequence").unwrap_or_default(),
                     };
                     created_lines.push(record);
                 }

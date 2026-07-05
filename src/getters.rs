@@ -44,6 +44,7 @@ pub async fn get_lms(
                     schedule_arrival_time: lms_node.get("schedule_arrival_time").unwrap_or_default(),
                     actual_start_time:     lms_node.get("actual_start_time").unwrap_or_default(),
                     actual_end_time:       lms_node.get("actual_end_time").unwrap_or_default(),
+                    dock_sequence:         lms_node.get("dock_sequence").unwrap_or_default(),
                 };
                 data.push(rec);
             }

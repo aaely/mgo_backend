@@ -51,6 +51,7 @@ pub struct LMSRecord {
     pub schedule_arrival_time: String,
     pub actual_start_time:     String,
     pub actual_end_time:       String,
+    pub dock_sequence:         String,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Default, Debug)]
