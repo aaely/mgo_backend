@@ -168,6 +168,8 @@ pub struct ExceptionLogEntry {
     pub newEndTime: String,
     pub comment: String,
     pub requestor: String,
+    pub isRepower: bool,
+    pub repowerLoadNum: String,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Default, Debug)]
@@ -345,6 +347,7 @@ pub struct DeckCoverage {
 pub struct ShiftDetail {
     pub shift:         String,
     pub day_key:       String,
+    pub shift_status:  String,
     pub assigned:      Vec<ShiftAssignment>,
     pub deck_coverage: Vec<DeckCoverage>,
 }
@@ -575,6 +578,19 @@ pub struct ChangePasswordRequest {
     pub new_password: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PartRoute {
+    pub part:  String,
+    pub duns:  String,
+    pub route: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeckRoute {
+    pub route: String,
+    pub parts: Vec<String>,
+}
+
 pub fn get_event_type(field: &str) -> &'static str {
     match field {
         "hour" | "dockCode" | "scac" | "trailer1" | "trailer2" |
@@ -768,16 +784,89 @@ pub async fn late_trailer_service(graph: Arc<Graph>, ws_list: WebSocketList) {
     }
 }
 
+struct AlertParams<'a> {
+    part: &'a str,
+    asl: &'a PartASL,
+    level: &'static str,
+    hours_to_out: f64,
+    next_asn_display: String,
+    next_trailer: String,
+    hours_until_rescue: f64,
+}
+
+async fn dispatch_alert(
+    p: AlertParams<'_>,
+    now: chrono::DateTime<chrono::Local>,
+    alerted_parts: &Arc<Mutex<HashMap<String, chrono::DateTime<chrono::Local>>>>,
+    alerts: &mut Vec<PartAlert>,
+) {
+    let sms_eligible = matches!(p.level, "Emerging Issue" | "Shut Down");
+
+    if sms_eligible {
+        // Only EI / Shut Down get logged
+        println!(
+            "ALERT [{}] part: {} deck: {} hours_to_out: {:.2} next_trailer: {} next_asn: {} rescue_margin: {:.2}",
+            p.level, p.part, p.asl.deck, p.hours_to_out, p.next_trailer, p.next_asn_display, p.hours_until_rescue
+        );
+
+        let should_sms = {
+            let alerted = alerted_parts.lock().await;
+            match alerted.get(p.part) {
+                Some(last) => now.signed_duration_since(*last).num_minutes() > 30,
+                None => true,
+            }
+        };
+
+        if should_sms {
+            let sms_to = std::env::var("ALERT_SMS").unwrap_or_else(|_| "+18777804236".to_string());
+            let msg = format!(
+                "🚨 PART ALERT [{}] {} - {} - {:.1} hrs to outage. Next ASN: {} on {}",
+                p.level.to_uppercase(), p.part, p.asl.deck, p.hours_to_out, p.next_trailer, p.next_asn_display,
+            );
+            if let Err(e) = send_sms(&sms_to, &msg).await {
+                eprintln!("Failed to send SMS: {:?}", e);
+            } else {
+                alerted_parts.lock().await.insert(p.part.to_string(), now);
+            }
+
+            if let Ok(alert_email) = std::env::var("ALERT_EMAIL") {
+                let subject = format!("Part Alert [{}] - {}", p.level, p.part);
+                let body = format!(
+                    "Part Number: {}\nDescription: {}\nSupplier: {}\nDeck: {}\n\nAlert Level: {}\nHours to Outage: {:.1}\nNext ASN ETA: {}\nNext Trailer: {}\nHours Until Rescue: {:.1}\n",
+                    p.part, p.asl.desc, p.asl.supplier, p.asl.deck,
+                    p.level, p.hours_to_out, p.next_asn_display, p.next_trailer, p.hours_until_rescue,
+                );
+                if let Err(e) = send_email(&alert_email, &subject, body).await {
+                    eprintln!("Failed to send part alert email: {:?}", e);
+                }
+            }
+        }
+    }
+
+    alerts.push(PartAlert {
+        part:               p.part.to_string(),
+        desc:               p.asl.desc.clone(),
+        duns:               p.asl.duns.clone(),
+        supplier:           p.asl.supplier.clone(),
+        deck:               p.asl.deck.clone(),
+        cbal:               p.asl.cbal,
+        hours_to_out:       p.hours_to_out,
+        next_asn_eta:       p.next_asn_display,
+        next_trailer:       p.next_trailer,
+        alert_level:        p.level.to_string(),
+        hours_until_rescue: p.hours_until_rescue,
+    });
+}
+
 pub async fn part_monitoring_service(
-    graph: Arc<Graph>, 
+    graph: Arc<Graph>,
     ws_list: WebSocketList,
     alerted_parts: Arc<Mutex<HashMap<String, chrono::DateTime<chrono::Local>>>>,
 ) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60 * 15));
-    
+
     loop {
         interval.tick().await;
-        println!("Running part monitoring service...");
 
         // ── Fetch all PartASL ──
         let asl_query = query("MATCH (n:PartASL) WHERE n.cbal > 0 RETURN n");
@@ -934,8 +1023,6 @@ pub async fn part_monitoring_service(
         };
         let current_hour_offset = (now_naive - window_start).num_hours().clamp(0, 47) as usize;
 
-        println!("Window start: {} Current hour offset: {}", window_start, current_hour_offset);
-
         // ── Run simulation for each part ──
         let mut alerts: Vec<PartAlert> = Vec::new();
 
@@ -966,8 +1053,6 @@ pub async fn part_monitoring_service(
             let mut bal = asl.cbal;
             let mut outage_window_idx: Option<usize> = None;
 
-            println!("Part: {} cbal: {:.1} asn_count: {}", part, asl.cbal, asns_for_part.len());
-
             for (i, &burn) in hourly.iter().enumerate() {
                 if burn <= 0.0 { continue; }
                 if bal <= burn {
@@ -980,7 +1065,7 @@ pub async fn part_monitoring_service(
             let out_idx = match outage_window_idx {
                 Some(idx) => idx,
                 None => {
-                    println!("  Part: {} survives full window", part);
+                    // Survives full window — clear any stale alert state
                     alerted_parts.lock().await.remove(part);
                     continue;
                 }
@@ -988,9 +1073,6 @@ pub async fn part_monitoring_service(
 
             let downtime_dt = window_start + chrono::Duration::hours(out_idx as i64);
             let hours_to_out = out_idx as f64 - current_hour_offset as f64;
-
-            println!("  Part: {} out_idx: {} downtime_dt: {} hours_to_out: {:.2} bal_at_out: {:.1}",
-                part, out_idx, downtime_dt, hours_to_out, bal);
 
             if hours_to_out > 48.0 {
                 alerted_parts.lock().await.remove(part);
@@ -1004,23 +1086,12 @@ pub async fn part_monitoring_service(
             let mut running_bal = asl.cbal;
             let mut last_asn_window_idx = 0usize;
 
-            println!("  ASNs for part {} (downtime: {}):", part, current_downtime_dt);
-            for (eda, eta, trailer, qty) in &asns_for_part {
-                let arrival = parse_asn_arrival(eda, eta);
-                println!(
-                    "    trailer: {} qty: {:.1} eda: {} eta: {} arrival: {:?} arrives_before_downtime: {:?}",
-                    trailer, qty, eda, eta, arrival,
-                    arrival.map(|a| a < current_downtime_dt)
-                );
-            }
-
             let classify = |h: f64| -> Option<&'static str> {
                 if h <= 0.0      { Some("Shut Down") }
                 else if h <= 2.0 { Some("Emerging Issue") }
                 else if h <= 6.0 { Some("Hot") }
                 else             { None }
             };
-
 
             // ── Check initial burn result before ASN chain ──
             if let Some(level) = classify(final_hours_to_out) {
@@ -1031,62 +1102,19 @@ pub async fn part_monitoring_service(
                 let next_asn_display = if next_eda.is_empty() { "N/A".to_string() }
                     else { format!("{} {}", next_eda, next_eta) };
                 let hours_until_rescue = asns_for_part
-                    .get(0)
+                    .first()
                     .and_then(|(eda, eta, _, _)| parse_asn_arrival(eda, eta))
                     .map(|arrival| (current_downtime_dt - arrival).num_minutes() as f64 / 60.0)
                     .unwrap_or(0.0);
 
-                println!(
-                    "  ALERT (initial): part: {} level: {} hours_to_out: {:.2} rescue_margin: {:.2}",
-                    part, level, final_hours_to_out, hours_until_rescue
-                );
-
-                let sms_eligible = matches!(level, "Emerging Issue" | "Shut Down");
-                if sms_eligible {
-                    let should_sms = {
-                        let alerted = alerted_parts.lock().await;
-                        match alerted.get(part) {
-                            Some(last_alerted) => now.signed_duration_since(*last_alerted).num_minutes() > 30,
-                            None => true,
-                        }
-                    };
-                    if should_sms {
-                        let msg = format!(
-                            "🚨 PART ALERT [{}] {} - {:.1} hrs to outage. Next ASN: {} on {}",
-                            level.to_uppercase(), part, final_hours_to_out, next_trailer, next_asn_display,
-                        );
-                        if let Err(e) = send_sms("+18777804236", &msg).await {
-                            eprintln!("Failed to send SMS: {:?}", e);
-                        } else {
-                            alerted_parts.lock().await.insert(part.clone(), now);
-                        }
-
-                        if let Ok(alert_email) = std::env::var("ALERT_EMAIL") {
-                            let subject = format!("Part Alert [{}] - {}", level, part);
-                            let body = format!(
-                                "Part Number: {}\nDescription: {}\nSupplier: {}\nDeck: {}\n\nAlert Level: {}\nHours to Outage: {:.1}\nNext ASN ETA: {}\nNext Trailer: {}\nHours Until Rescue: {:.1}\n",
-                                part, asl.desc, asl.supplier, asl.deck,
-                                level, final_hours_to_out, next_asn_display, next_trailer, hours_until_rescue,
-                            );
-                            if let Err(e) = send_email(&alert_email, &subject, body).await {
-                                eprintln!("Failed to send part alert email: {:?}", e);
-                            }
-                        }
-                    }
-                }
-                alerts.push(PartAlert {
-                    part:               part.clone(),
-                    desc:               asl.desc.clone(),
-                    duns:               asl.duns.clone(),
-                    supplier:           asl.supplier.clone(),
-                    deck:               asl.deck.clone(),
-                    cbal:               asl.cbal,
-                    hours_to_out:       final_hours_to_out,
-                    next_asn_eta:       next_asn_display,
-                    next_trailer,
-                    alert_level:        level.to_string(),
-                    hours_until_rescue,
-                });
+                dispatch_alert(
+                    AlertParams {
+                        part, asl, level,
+                        hours_to_out: final_hours_to_out,
+                        next_asn_display, next_trailer, hours_until_rescue,
+                    },
+                    now, &alerted_parts, &mut alerts,
+                ).await;
             }
 
             // ── ASN chain loop ──
@@ -1102,10 +1130,7 @@ pub async fn part_monitoring_service(
                     Some((rel_idx, (eda, eta, _, qty))) => {
                         (asn_index + rel_idx, eda.clone(), eta.clone(), *qty)
                     }
-                    None => {
-                        println!("  No saving ASN found — outage stands at {}", current_downtime_dt);
-                        break;
-                    }
+                    None => break, // No saving ASN — outage stands
                 };
 
                 asn_index = abs_idx + 1;
@@ -1125,11 +1150,6 @@ pub async fn part_monitoring_service(
                 running_bal += qty;
                 last_asn_window_idx = asn_window_idx;
 
-                println!(
-                    "  Saving ASN: eda: {} eta: {} arrival: {} asn_window_idx: {} qty: {:.1} bal_after_injection: {:.1}",
-                    eda, eta, arrival_dt, asn_window_idx, qty, running_bal
-                );
-
                 // Burn forward from ASN arrival to find next outage
                 let mut new_out_idx: Option<usize> = None;
                 let mut temp_bal = running_bal;
@@ -1146,21 +1166,15 @@ pub async fn part_monitoring_service(
 
                 match new_out_idx {
                     None => {
-                        println!("  Part: {} survives after ASN at {}", part, arrival_dt);
+                        // Survives after this ASN — clear alert state
                         alerted_parts.lock().await.remove(part);
                         break;
                     }
                     Some(idx) => {
                         current_downtime_dt = window_start + chrono::Duration::hours(idx as i64);
                         final_hours_to_out = idx as f64 - current_hour_offset as f64;
-
-                        // How far before the new downtime the ASN that just arrived lands
-                        let hours_until_rescue = (current_downtime_dt - arrival_dt).num_minutes() as f64 / 60.0;
-
-                        println!(
-                            "  Still runs out — new out_idx: {} new downtime: {} hours_to_out: {:.2} bal_after_burn: {:.1} rescue_margin: {:.2}",
-                            idx, current_downtime_dt, final_hours_to_out, temp_bal, hours_until_rescue
-                        );
+                        let hours_until_rescue =
+                            (current_downtime_dt - arrival_dt).num_minutes() as f64 / 60.0;
 
                         if let Some(level) = classify(final_hours_to_out) {
                             let (next_eda, next_eta, next_trailer) = asns_for_part
@@ -1170,58 +1184,14 @@ pub async fn part_monitoring_service(
                             let next_asn_display = if next_eda.is_empty() { "N/A".to_string() }
                                 else { format!("{} {}", next_eda, next_eta) };
 
-                            println!(
-                                "  ALERT (chain): part: {} level: {} hours_to_out: {:.2} next_trailer: {} next_asn: {} rescue_margin: {:.2}",
-                                part, level, final_hours_to_out, next_trailer, next_asn_display, hours_until_rescue
-                            );
-
-                            let sms_eligible = matches!(level, "Emerging Issue" | "Shut Down");
-                            if sms_eligible {
-                                let should_sms = {
-                                    let alerted = alerted_parts.lock().await;
-                                    match alerted.get(part) {
-                                        Some(last_alerted) => now.signed_duration_since(*last_alerted).num_minutes() > 30,
-                                        None => true,
-                                    }
-                                };
-                                if should_sms {
-                                    let msg = format!(
-                                        "🚨 PART ALERT [{}] {} - {:.1} hrs to outage. Next ASN: {} on {}",
-                                        level.to_uppercase(), part, final_hours_to_out, next_trailer, next_asn_display,
-                                    );
-                                    if let Err(e) = send_sms("+18777804236", &msg).await {
-                                        eprintln!("Failed to send SMS: {:?}", e);
-                                    } else {
-                                        alerted_parts.lock().await.insert(part.clone(), now);
-                                    }
-
-                                    if let Ok(alert_email) = std::env::var("ALERT_EMAIL") {
-                                        let subject = format!("Part Alert [{}] - {}", level, part);
-                                        let body = format!(
-                                            "Part Number: {}\nDescription: {}\nSupplier: {}\nDeck: {}\n\nAlert Level: {}\nHours to Outage: {:.1}\nNext ASN ETA: {}\nNext Trailer: {}\nHours Until Rescue: {:.1}\n",
-                                            part, asl.desc, asl.supplier, asl.deck,
-                                            level, final_hours_to_out, next_asn_display, next_trailer, hours_until_rescue,
-                                        );
-                                        if let Err(e) = send_email(&alert_email, &subject, body).await {
-                                            eprintln!("Failed to send part alert email: {:?}", e);
-                                        }
-                                    }
-                                }
-                            }
-
-                            alerts.push(PartAlert {
-                                part:               part.clone(),
-                                desc:               asl.desc.clone(),
-                                duns:               asl.duns.clone(),
-                                supplier:           asl.supplier.clone(),
-                                deck:               asl.deck.clone(),
-                                cbal:               asl.cbal,
-                                hours_to_out:       final_hours_to_out,
-                                next_asn_eta:       next_asn_display,
-                                next_trailer,
-                                alert_level:        level.to_string(),
-                                hours_until_rescue,
-                            });
+                            dispatch_alert(
+                                AlertParams {
+                                    part, asl, level,
+                                    hours_to_out: final_hours_to_out,
+                                    next_asn_display, next_trailer, hours_until_rescue,
+                                },
+                                now, &alerted_parts, &mut alerts,
+                            ).await;
                         }
                     }
                 }
@@ -1229,12 +1199,8 @@ pub async fn part_monitoring_service(
         }
 
         if alerts.is_empty() {
-            println!("Part monitoring: no alerts");
             continue;
         }
-
-        println!("Part monitoring: {} alerts found", alerts.len());
-        println!("Alerts: {:?}", alerts);
 
         // ── Broadcast alerts via WebSocket ──
         if let Ok(data) = serde_json::to_string(&alerts) {

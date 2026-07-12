@@ -354,24 +354,28 @@ pub async fn upload_exception(
                 e.newTime      = $newTime,
                 e.newEndDate   = $newEndDate,
                 e.newEndTime   = $newEndTime,
-                e.comment      = $comment,
-                e.requestor    = $requestor
+                e.comment         = $comment,
+                e.requestor       = $requestor,
+                e.isRepower       = $isRepower,
+                e.repowerLoadNum  = $repowerLoadNum
             ON MATCH SET
-                e.type         = $type,
-                e.status       = $status,
-                e.route        = $route,
-                e.scac         = $scac,
-                e.trailer2     = $trailer2,
-                e.supplier     = $supplier,
-                e.dockSequence = $dockSequence,
-                e.originalDate = $originalDate,
-                e.originalTime = $originalTime,
-                e.newDate      = $newDate,
-                e.newTime      = $newTime,
-                e.newEndDate   = $newEndDate,
-                e.newEndTime   = $newEndTime,
-                e.comment      = $comment,
-                e.requestor    = $requestor
+                e.type            = $type,
+                e.status          = $status,
+                e.route           = $route,
+                e.scac            = $scac,
+                e.trailer2        = $trailer2,
+                e.supplier        = $supplier,
+                e.dockSequence    = $dockSequence,
+                e.originalDate    = $originalDate,
+                e.originalTime    = $originalTime,
+                e.newDate         = $newDate,
+                e.newTime         = $newTime,
+                e.newEndDate      = $newEndDate,
+                e.newEndTime      = $newEndTime,
+                e.comment         = $comment,
+                e.requestor       = $requestor,
+                e.isRepower       = $isRepower,
+                e.repowerLoadNum  = $repowerLoadNum
             RETURN e
         ")
         .param("loadNum",      line.loadNum.clone())
@@ -390,8 +394,10 @@ pub async fn upload_exception(
         .param("newTime",      line.newTime.clone())
         .param("newEndDate",   line.newEndDate.clone())
         .param("newEndTime",   line.newEndTime.clone())
-        .param("comment",      line.comment.clone())
-        .param("requestor",    line.requestor.clone());
+        .param("comment",         line.comment.clone())
+        .param("requestor",       line.requestor.clone())
+        .param("isRepower",       line.isRepower)
+        .param("repowerLoadNum",  line.repowerLoadNum.clone());
 
         match graph.execute(query).await {
             Ok(mut result) => {
@@ -417,8 +423,10 @@ pub async fn upload_exception(
                         newTime:      e.get("newTime").unwrap_or_default(),
                         newEndDate:   e.get("newEndDate").unwrap_or_default(),
                         newEndTime:   e.get("newEndTime").unwrap_or_default(),
-                        comment:      e.get("comment").unwrap_or_default(),
-                        requestor:    e.get("requestor").unwrap_or_default(),
+                        comment:        e.get("comment").unwrap_or_default(),
+                        requestor:      e.get("requestor").unwrap_or_default(),
+                        isRepower:      e.get("isRepower").unwrap_or(false),
+                        repowerLoadNum: e.get("repowerLoadNum").unwrap_or_default(),
                     };
 
                     // ── Audit trail: log exception upload ──
@@ -1346,8 +1354,10 @@ pub async fn upload_on_deck(
                     newTime:      e.newTime,
                     newEndDate:   e.newEndDate,
                     newEndTime:   e.newEndTime,
-                    comment:      e.comment,
-                    requestor:    e.requestor
+                    comment:        e.comment,
+                    requestor:      e.requestor,
+                    isRepower:      e.isRepower,
+                    repowerLoadNum: e.repowerLoadNum
                 })
                 DELETE e
             ")

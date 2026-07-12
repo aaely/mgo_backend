@@ -164,6 +164,8 @@ async fn main() {
             get_week,
             assign_shift,
             unassign_shift,
+            get_scan_routes,
+            get_part_routes,
             get_exceptions,
             upload_exception,
             delivered,
