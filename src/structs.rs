@@ -583,6 +583,7 @@ pub struct PartRoute {
     pub part:  String,
     pub duns:  String,
     pub route: String,
+    pub doh:   Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

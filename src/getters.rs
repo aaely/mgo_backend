@@ -1743,7 +1743,7 @@ pub async fn get_part_routes(
 ) -> Result<Json<Vec<PartRoute>>, Json<&'static str>> {
     let graph = &state.graph;
 
-    let q = query("MATCH (p:PartRoute) RETURN p.part AS part, p.duns AS duns, p.route AS route");
+    let q = query("MATCH (p:PartRoute) OPTIONAL MATCH (a:PartASL {part: p.part}) RETURN p.part AS part, p.duns AS duns, p.route AS route, a.doh AS doh");
 
     match graph.execute(q).await {
         Ok(mut result) => {
@@ -1753,6 +1753,7 @@ pub async fn get_part_routes(
                     part:  row.get("part").unwrap_or_default(),
                     duns:  row.get("duns").unwrap_or_default(),
                     route: row.get("route").unwrap_or_default(),
+                    doh:   row.get("doh").ok(),
                 });
             }
             Ok(Json(parts))
