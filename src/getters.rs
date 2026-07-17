@@ -74,6 +74,7 @@ pub async fn get_lms_by_route(
     let q = query("
         MATCH (l:LMSRecord)
         WHERE toLower(l.route_id) CONTAINS toLower($route)
+        ORDER BY l.schedule_arrival_time
         RETURN l
     ").param("route", route);
 
