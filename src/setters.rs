@@ -1,4 +1,5 @@
 use crate::structs::*;
+use crate::helpers::{build_update_query, get_requested_fields};
 use crate::auth::{AuthenticatedUser, AdminOrManager, AdminOnly, AdminOrSupervisor};
 use crate::role::Role;
 use tokio_tungstenite::tungstenite::Message;

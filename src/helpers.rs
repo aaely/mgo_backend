@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use chrono::{DateTime, Duration, NaiveDate, Utc, Timelike, Datelike};
+use neo4rs::query;
+use crate::structs::{TrailerRecord, get_allowed_fields};
 
 pub fn get_shift(hour: u32) -> &'static str {
     match hour {
@@ -151,4 +153,99 @@ pub async fn send_sms(to: &str, body: &str) -> Result<(), Box<dyn std::error::Er
         .await?;
 
     Ok(())
+}
+
+pub fn get_requested_fields(trailer: &TrailerRecord) -> Vec<&'static str> {
+    let mut fields = vec![];
+    if !trailer.hour.is_empty()              { fields.push("hour") }
+    if !trailer.dockCode.is_empty()          { fields.push("dockCode") }
+    if !trailer.scac.is_empty()              { fields.push("scac") }
+    if !trailer.trailer1.is_empty()          { fields.push("trailer1") }
+    if !trailer.trailer2.is_empty()          { fields.push("trailer2") }
+    if !trailer.adjustedStartTime.is_empty() { fields.push("adjustedStartTime") }
+    if !trailer.scheduleEndDate.is_empty()   { fields.push("scheduleEndDate") }
+    if !trailer.scheduleEndTime.is_empty()   { fields.push("scheduleEndTime") }
+    if !trailer.gateArrivalTime.is_empty()   { fields.push("gateArrivalTime") }
+    if !trailer.actualStartTime.is_empty()   { fields.push("actualStartTime") }
+    if !trailer.actualEndTime.is_empty()     { fields.push("actualEndTime") }
+    if !trailer.statusOX.is_empty()          { fields.push("statusOX") }
+    if !trailer.ryderComments.is_empty()     { fields.push("ryderComments") }
+    if trailer.gmComments.is_some()          { fields.push("gmComments") }
+    if trailer.lateComments.is_some()        { fields.push("lateComments") }
+    fields
+}
+
+pub fn build_update_query(role: &str, trailer: &TrailerRecord) -> neo4rs::Query {
+    let allowed = get_allowed_fields(role).unwrap_or_default();
+    let is_admin = allowed.contains(&"*");
+
+    let mut sets = vec![];
+    if is_admin || allowed.contains(&"hour")              { sets.push("t.hour = $hour") }
+    if is_admin || allowed.contains(&"dockCode")          { sets.push("t.dockCode = $dockCode") }
+    if is_admin || allowed.contains(&"scac")              { sets.push("t.scac = $scac") }
+    if is_admin || allowed.contains(&"trailer1")          { sets.push("t.trailer1 = $trailer1") }
+    if is_admin || allowed.contains(&"trailer2")          { sets.push("t.trailer2 = $trailer2") }
+    if is_admin || allowed.contains(&"adjustedStartTime") { sets.push("t.adjustedStartTime = $adjustedStartTime") }
+    if is_admin || allowed.contains(&"scheduleEndDate")   { sets.push("t.scheduleEndDate = $scheduleEndDate") }
+    if is_admin || allowed.contains(&"scheduleEndTime")   { sets.push("t.scheduleEndTime = $scheduleEndTime") }
+    if is_admin || allowed.contains(&"gateArrivalTime")   { sets.push("t.gateArrivalTime = $gateArrivalTime") }
+    if is_admin || allowed.contains(&"actualStartTime")   { sets.push("t.actualStartTime = $actualStartTime") }
+    if is_admin || allowed.contains(&"actualEndTime")     { sets.push("t.actualEndTime = $actualEndTime") }
+    if is_admin || allowed.contains(&"statusOX")          { sets.push("t.statusOX = $statusOX") }
+    if is_admin || allowed.contains(&"ryderComments")     { sets.push("t.ryderComments = $ryderComments") }
+    if is_admin || allowed.contains(&"gmComments")        { sets.push("t.gmComments = $gmComments") }
+    if is_admin || allowed.contains(&"lateComments")      { sets.push("t.lateComments = $lateComments") }
+    if is_admin || allowed.contains(&"door")              { sets.push("t.door = $door") }
+    if is_admin || allowed.contains(&"doorArrivalTime")   { sets.push("t.doorArrivalTime = $doorArrivalTime") }
+
+    let cypher = format!(
+        "MATCH (t:LiveTrailer {{uuid: $uuid}}) SET {} RETURN t",
+        sets.join(", ")
+    );
+
+    query(&cypher)
+        .param("uuid",              trailer.uuid.clone())
+        .param("hour",              trailer.hour.clone())
+        .param("dockCode",          trailer.dockCode.clone())
+        .param("scac",              trailer.scac.clone())
+        .param("trailer1",          trailer.trailer1.clone())
+        .param("trailer2",          trailer.trailer2.clone())
+        .param("adjustedStartTime", trailer.adjustedStartTime.clone())
+        .param("scheduleEndDate",   trailer.scheduleEndDate.clone())
+        .param("scheduleEndTime",   trailer.scheduleEndTime.clone())
+        .param("gateArrivalTime",   trailer.gateArrivalTime.clone())
+        .param("actualStartTime",   trailer.actualStartTime.clone())
+        .param("actualEndTime",     trailer.actualEndTime.clone())
+        .param("statusOX",          trailer.statusOX.clone())
+        .param("ryderComments",     trailer.ryderComments.clone())
+        .param("gmComments",        trailer.gmComments.clone().unwrap_or_default())
+        .param("lateComments",      trailer.lateComments.clone().unwrap_or_default())
+        .param("door",              trailer.door.clone())
+        .param("doorArrivalTime",   trailer.doorArrivalTime.clone())
+}
+
+pub fn get_event_type(field: &str) -> &'static str {
+    match field {
+        "hour" | "dockCode" | "scac" | "trailer1" | "trailer2" |
+        "adjustedStartTime" | "scheduleEndDate" | "scheduleEndTime" |
+        "gateArrivalTime" | "actualStartTime" | "actualEndTime" |
+        "statusOX" | "ryderComments" | "gmComments" | "lateComments" |
+        "door" | "doorArrivalTime" | "LiveAdd" => "Trailer Updates",
+        "shift_rolled"                          => "Shift Roll",
+        "hot_part_created" | "hot_part_closed"  => "Hot Parts",
+        "exception_uploaded" | "dycomm_uploaded" => "Uploads",
+        _                                       => "Other",
+    }
+}
+
+pub fn check_fields(role: &str, fields: &[&str]) -> Result<(), Vec<String>> {
+    let allowed = get_allowed_fields(role).unwrap_or_default();
+    if allowed.contains(&"*") {
+        return Ok(());
+    }
+    let denied: Vec<String> = fields.iter()
+        .filter(|f| !allowed.contains(f))
+        .map(|f| f.to_string())
+        .collect();
+    if denied.is_empty() { Ok(()) } else { Err(denied) }
 }
