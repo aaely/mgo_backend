@@ -525,8 +525,14 @@ pub struct PartAlert {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct HourCount {
+    pub hour:  String,
+    pub count: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DockCountResponse {
-    pub hr_total:    u32,
+    pub hourly:      Vec<HourCount>,
     pub shift_total: u32,
 }
 

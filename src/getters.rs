@@ -1521,59 +1521,70 @@ pub async fn get_dock_count(
     _user: AuthenticatedUser,
 ) -> Result<Json<DockCountResponse>, Json<&'static str>> {
     let graph = &state.graph;
-    let mut hr_total: u32 = 0;
     let mut shift_total: u32 = 0;
 
     let hour_u32: u32 = hour.parse().unwrap_or(0);
     let win = get_shift_window(&date, hour_u32);
 
     // ── Per-hour counts ──
+    let hour_dates: Vec<(String, String)> = win.hours1.iter()
+        .map(|h| (h.clone(), win.date1.clone()))
+        .chain(win.hours2.iter().map(|h| (h.clone(), win.date2.clone())))
+        .collect();
 
-    let q1 = query("
-        MATCH (e:ExceptionLogEntry)
-        WHERE e.newDate = $date AND e.dock = $dock AND substring(e.newTime, 0, 2) = $hour
-        RETURN count(e) AS cnt
-    ")
-    .param("date", date.clone())
-    .param("dock", dock.clone())
-    .param("hour", hour.clone());
+    let mut hourly: Vec<HourCount> = Vec::new();
 
-    if let Ok(mut result) = graph.execute(q1).await {
-        if let Ok(Some(row)) = result.next().await {
-            hr_total += row.get::<i64>("cnt").unwrap_or(0) as u32;
+    for (hr, date_for_hr) in &hour_dates {
+        let mut count: u32 = 0;
+
+        let q1 = query("
+            MATCH (e:ExceptionLogEntry)
+            WHERE e.newDate = $date AND e.dock = $dock AND substring(e.newTime, 0, 2) = $hour
+            RETURN count(e) AS cnt
+        ")
+        .param("date", date_for_hr.clone())
+        .param("dock", dock.clone())
+        .param("hour", hr.clone());
+
+        if let Ok(mut result) = graph.execute(q1).await {
+            if let Ok(Some(row)) = result.next().await {
+                count += row.get::<i64>("cnt").unwrap_or(0) as u32;
+            }
         }
-    }
 
-    let q2 = query("
-        MATCH (d:DyCommLogEntry)
-        WHERE d.deliveryDate = $date AND d.dock = $dock AND substring(d.deliveryTime, 0, 2) = $hour
-        RETURN count(d) AS cnt
-    ")
-    .param("date", date.clone())
-    .param("dock", dock.clone())
-    .param("hour", hour.clone());
+        let q2 = query("
+            MATCH (d:DyCommLogEntry)
+            WHERE d.deliveryDate = $date AND d.dock = $dock AND substring(d.deliveryTime, 0, 2) = $hour
+            RETURN count(d) AS cnt
+        ")
+        .param("date", date_for_hr.clone())
+        .param("dock", dock.clone())
+        .param("hour", hr.clone());
 
-    if let Ok(mut result) = graph.execute(q2).await {
-        if let Ok(Some(row)) = result.next().await {
-            hr_total += row.get::<i64>("cnt").unwrap_or(0) as u32;
+        if let Ok(mut result) = graph.execute(q2).await {
+            if let Ok(Some(row)) = result.next().await {
+                count += row.get::<i64>("cnt").unwrap_or(0) as u32;
+            }
         }
-    }
 
-    let q3 = query("
-        MATCH (l:LMSRecord)
-        WHERE l.schedule_arrival_time STARTS WITH $date
-          AND l.dock = $dock
-          AND substring(l.schedule_arrival_time, 11, 2) = $hour
-        RETURN count(l) AS cnt
-    ")
-    .param("date", date.clone())
-    .param("dock", dock.clone())
-    .param("hour", hour.clone());
+        let q3 = query("
+            MATCH (l:LMSRecord)
+            WHERE l.schedule_arrival_time STARTS WITH $date
+              AND l.dock = $dock
+              AND substring(l.schedule_arrival_time, 11, 2) = $hour
+            RETURN count(l) AS cnt
+        ")
+        .param("date", date_for_hr.clone())
+        .param("dock", dock.clone())
+        .param("hour", hr.clone());
 
-    if let Ok(mut result) = graph.execute(q3).await {
-        if let Ok(Some(row)) = result.next().await {
-            hr_total += row.get::<i64>("cnt").unwrap_or(0) as u32;
+        if let Ok(mut result) = graph.execute(q3).await {
+            if let Ok(Some(row)) = result.next().await {
+                count += row.get::<i64>("cnt").unwrap_or(0) as u32;
+            }
         }
+
+        hourly.push(HourCount { hour: hr.clone(), count });
     }
 
     // ── Shift-window counts ──
@@ -1635,7 +1646,7 @@ pub async fn get_dock_count(
         }
     }
 
-    Ok(Json(DockCountResponse { hr_total, shift_total }))
+    Ok(Json(DockCountResponse { hourly, shift_total }))
 }
 
 #[get("/api/get_hot_parts")]
