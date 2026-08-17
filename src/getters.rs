@@ -1471,6 +1471,144 @@ pub async fn get_part_asn(state: &State<AppState>) -> Json<Vec<PartASN>> {
     Json(parts)
 }
 
+#[get("/api/get_contacts")]
+pub async fn get_contacts(
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+) -> Json<Vec<Contact>> {
+    let graph = &state.graph;
+
+    let q = query("MATCH (c:Contact) RETURN c");
+
+    let mut result = match graph.execute(q).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("get_contacts error: {e}");
+            return Json(vec![]);
+        }
+    };
+
+    let mut contacts: Vec<Contact> = vec![];
+    while let Ok(Some(row)) = result.next().await {
+        if let Ok(node) = row.get::<Node>("c") {
+            contacts.push(Contact {
+                email: node.get("email").unwrap_or_default(),
+                name:  node.get("name").unwrap_or_default(),
+                phone: node.get("phone").unwrap_or_default(),
+                duns:  node.get("duns").unwrap_or_default(),
+                scac:  node.get("scac").unwrap_or_default(),
+            });
+        }
+    }
+
+    Json(contacts)
+}
+
+#[get("/api/get_carriers")]
+pub async fn get_carriers(
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+) -> Json<Vec<String>> {
+    let graph = &state.graph;
+
+    let q = query("MATCH (c:Carrier) RETURN c.scac AS scac ORDER BY c.scac");
+
+    let mut result = match graph.execute(q).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("get_carriers error: {e}");
+            return Json(vec![]);
+        }
+    };
+
+    let mut carriers: Vec<String> = vec![];
+    while let Ok(Some(row)) = result.next().await {
+        carriers.push(row.get("scac").unwrap_or_default());
+    }
+
+    Json(carriers)
+}
+
+#[get("/api/get_route_contacts?<route>")]
+pub async fn get_route_contacts(
+    state: &State<AppState>,
+    route: String,
+    _user: AuthenticatedUser,
+) -> Result<Json<Vec<DunsContacts>>, Json<&'static str>> {
+    let graph = &state.graph;
+
+    let q = query("
+        MATCH (r:Route {route: $route})-[:HAS_DUNS]->(d:Duns)
+        OPTIONAL MATCH (d)-[:HAS_CONTACT]->(c:Contact)
+        RETURN d.duns AS duns,
+               [x IN collect(DISTINCT {
+                   email: c.email,
+                   name:  c.name,
+                   phone: c.phone,
+                   duns:  c.duns
+               }) WHERE x.email IS NOT NULL] AS contacts
+        ORDER BY d.duns
+    ")
+    .param("route", route);
+
+    match graph.execute(q).await {
+        Ok(mut result) => {
+            let mut groups: Vec<DunsContacts> = Vec::new();
+            while let Ok(Some(row)) = result.next().await {
+                groups.push(DunsContacts {
+                    duns:     row.get("duns").unwrap_or_default(),
+                    contacts: row.get("contacts").unwrap_or_default(),
+                });
+            }
+            Ok(Json(groups))
+        }
+        Err(e) => {
+            eprintln!("Failed to get route contacts: {:?}", e);
+            Err(Json("Failed to get route contacts"))
+        }
+    }
+}
+
+#[get("/api/get_route_carrier_contacts?<route>")]
+pub async fn get_route_carrier_contacts(
+    state: &State<AppState>,
+    route: String,
+    _user: AuthenticatedUser,
+) -> Result<Json<Vec<CarrierContacts>>, Json<&'static str>> {
+    let graph = &state.graph;
+
+    let q = query("
+        MATCH (car:Carrier)-[:HAS_ROUTE]->(r:Route {route: $route})
+        OPTIONAL MATCH (car)-[:HAS_CONTACT]->(c:Contact)
+        RETURN car.scac AS scac,
+               [x IN collect(DISTINCT {
+                   email: c.email,
+                   name:  c.name,
+                   phone: c.phone,
+                   scac:  c.scac
+               }) WHERE x.email IS NOT NULL] AS contacts
+        ORDER BY car.scac
+    ")
+    .param("route", route);
+
+    match graph.execute(q).await {
+        Ok(mut result) => {
+            let mut groups: Vec<CarrierContacts> = Vec::new();
+            while let Ok(Some(row)) = result.next().await {
+                groups.push(CarrierContacts {
+                    scac:     row.get("scac").unwrap_or_default(),
+                    contacts: row.get("contacts").unwrap_or_default(),
+                });
+            }
+            Ok(Json(groups))
+        }
+        Err(e) => {
+            eprintln!("Failed to get route carrier contacts: {:?}", e);
+            Err(Json("Failed to get route carrier contacts"))
+        }
+    }
+}
+
 #[get("/api/get_part_asl")]
 pub async fn get_part_asl(state: &State<AppState>) -> Json<Vec<PartASL>> {
     let graph = &state.graph;
@@ -1754,7 +1892,7 @@ pub async fn get_part_routes(
 ) -> Result<Json<Vec<PartRoute>>, Json<&'static str>> {
     let graph = &state.graph;
 
-    let q = query("MATCH (p:PartRoute) OPTIONAL MATCH (a:PartASL {part: p.part}) RETURN p.part AS part, p.duns AS duns, p.route AS route, a.doh AS doh");
+    let q = query("MATCH (p:PartRoute) OPTIONAL MATCH (a:PartASL {part: p.part}) RETURN p.part AS part, p.duns AS duns, p.route AS route, p.desc AS desc, p.deck AS deck, a.doh AS doh");
 
     match graph.execute(q).await {
         Ok(mut result) => {
@@ -1764,6 +1902,8 @@ pub async fn get_part_routes(
                     part:  row.get("part").unwrap_or_default(),
                     duns:  row.get("duns").unwrap_or_default(),
                     route: row.get("route").unwrap_or_default(),
+                    desc:  row.get("desc").unwrap_or_default(),
+                    deck:  row.get("deck").unwrap_or_default(),
                     doh:   row.get("doh").ok(),
                 });
             }

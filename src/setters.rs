@@ -240,6 +240,45 @@ pub async fn upload_lms(
             }
         }
     }
+
+    // ── Merge Carrier nodes for every SCAC seen ──
+    let carrier_query = query("
+        MATCH (l:LMSRecord)
+        WHERE l.scac IS NOT NULL AND l.scac <> ''
+        MERGE (car:Carrier {scac: l.scac})
+    ");
+    graph.run(carrier_query).await.map_err(|e| {
+        eprintln!("Failed to merge Carrier nodes: {:?}", e);
+        Json("Failed to merge Carrier nodes")
+    })?;
+
+    // ── Link Carrier -> Route (traverse either direction without an arrow) ──
+    let carrier_route_query = query("
+        MATCH (l:LMSRecord)
+        WHERE l.scac     IS NOT NULL AND l.scac     <> ''
+          AND l.route_id IS NOT NULL AND l.route_id <> ''
+        MERGE (car:Carrier {scac: l.scac})
+        MERGE (r:Route {route: l.route_id})
+        MERGE (car)-[:HAS_ROUTE]->(r)
+    ");
+    graph.run(carrier_route_query).await.map_err(|e| {
+        eprintln!("Failed to link Carrier to Route: {:?}", e);
+        Json("Failed to link Carrier to Route")
+    })?;
+
+    // ── Drop stale Carrier -> Route links no longer backed by an LMSRecord ──
+    let prune_query = query("
+        MATCH (car:Carrier)-[rel:HAS_ROUTE]->(r:Route)
+        OPTIONAL MATCH (l:LMSRecord {scac: car.scac, route_id: r.route})
+        WITH rel, l
+        WHERE l IS NULL
+        DELETE rel
+    ");
+    graph.run(prune_query).await.map_err(|e| {
+        eprintln!("Failed to prune stale Carrier-Route links: {:?}", e);
+        Json("Failed to prune stale Carrier-Route links")
+    })?;
+
     Ok(Json(created_lines))
 }
 
@@ -2027,6 +2066,72 @@ pub async fn upload_part_asl(
     Ok(Json("PartASL uploaded successfully"))
 }
 
+#[post("/api/upload_part_route", format = "json", data = "<data>")]
+pub async fn upload_part_route(
+    data:  Json<Vec<PartRoute>>,
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+) -> Result<Json<&'static str>, Json<&'static str>> {
+    let graph = &state.graph;
+
+    // ── Clear existing PartRoute data ──
+    let clear_query = query("MATCH (n:PartRoute) DETACH DELETE n");
+    graph.run(clear_query).await.map_err(|e| {
+        eprintln!("Failed to clear PartRoute: {:?}", e);
+        Json("Failed to clear PartRoute")
+    })?;
+
+    for pr in data.iter() {
+        let q = query("
+            CREATE (n:PartRoute {
+                part:  $part,
+                duns:  $duns,
+                route: $route,
+                desc:  $desc,
+                deck:  $deck
+            })
+        ")
+        .param("part",  pr.part.clone())
+        .param("duns",  pr.duns.clone())
+        .param("route", pr.route.clone())
+        .param("desc",  pr.desc.clone())
+        .param("deck",  pr.deck.clone());
+
+        graph.run(q).await.map_err(|e| {
+            eprintln!("Failed to upload PartRoute: {:?}", e);
+            Json("Failed to upload PartRoute")
+        })?;
+    }
+
+    // ── Backfill deck from PartASL ──
+    let deck_query = query("
+        MATCH (p:PartRoute)
+        WITH p
+        MATCH (pa:PartASL {part: p.part})
+        SET p.deck = pa.deck
+    ");
+    graph.run(deck_query).await.map_err(|e| {
+        eprintln!("Failed to backfill PartRoute deck: {:?}", e);
+        Json("Failed to backfill PartRoute deck")
+    })?;
+
+    // ── Link Route -> Duns (Duns already links to Contact via update_contact) ──
+    let route_duns_query = query("
+        MATCH (p:PartRoute)
+        WHERE p.route IS NOT NULL AND p.route <> ''
+          AND p.duns  IS NOT NULL AND p.duns  <> ''
+        MERGE (r:Route {route: p.route})
+        MERGE (d:Duns {duns: p.duns})
+        MERGE (r)-[:HAS_DUNS]->(d)
+    ");
+    graph.run(route_duns_query).await.map_err(|e| {
+        eprintln!("Failed to link Route to Duns: {:?}", e);
+        Json("Failed to link Route to Duns")
+    })?;
+
+    Ok(Json("PartRoute uploaded successfully"))
+}
+
 #[post("/api/upload_part_out", format = "json", data = "<data>")]
 pub async fn upload_part_out(
     data:  Json<Vec<PartOut>>,
@@ -2120,6 +2225,73 @@ pub async fn update_user(
     })?;
 
     Ok(Json("User updated"))
+}
+
+#[post("/api/update_contact", format = "json", data = "<req>")]
+pub async fn update_contact(
+    req:    Json<Contact>,
+    state:  &State<AppState>,
+    _guard: AdminOrManager,
+) -> Result<Json<&'static str>, Json<&'static str>> {
+    if req.email.trim().is_empty() {
+        return Err(Json("email is required"));
+    }
+    if req.duns.trim().is_empty() && req.scac.trim().is_empty() {
+        return Err(Json("either duns or scac is required"));
+    }
+
+    let graph = &state.graph;
+
+    let q = query("
+        MERGE (c:Contact {email: $email})
+        SET c.name  = $name,
+            c.phone = $phone,
+            c.duns  = $duns,
+            c.scac  = $scac
+        WITH c
+        FOREACH (_ IN CASE WHEN c.duns  <> '' THEN [1] ELSE [] END |
+            MERGE (d:Duns {duns: c.duns})
+            MERGE (d)-[:HAS_CONTACT]->(c)
+        )
+        FOREACH (_ IN CASE WHEN c.scac  <> '' THEN [1] ELSE [] END |
+            MERGE (car:Carrier {scac: c.scac})
+            MERGE (car)-[:HAS_CONTACT]->(c)
+        )
+    ")
+    .param("email", req.email.clone())
+    .param("name",  req.name.clone())
+    .param("phone", req.phone.clone())
+    .param("duns",  req.duns.clone())
+    .param("scac",  req.scac.clone());
+
+    graph.run(q).await.map_err(|e| {
+        eprintln!("Failed to update contact: {:?}", e);
+        Json("Failed to update contact")
+    })?;
+
+    Ok(Json("Contact updated"))
+}
+
+#[delete("/api/delete_contact", format = "json", data = "<req>")]
+pub async fn delete_contact(
+    req:    Json<DeleteContactRequest>,
+    state:  &State<AppState>,
+    _guard: AdminOrManager,
+) -> Result<Json<&'static str>, Json<&'static str>> {
+    let graph = &state.graph;
+
+    let q = query("
+        MATCH (c:Contact {email: $email})
+        DETACH DELETE c
+    ")
+    .param("email", req.email.clone());
+
+    graph.run(q).await.map_err(|e| {
+        eprintln!("Failed to delete contact: {:?}", e);
+        Json("Failed to delete contact")
+    })?;
+
+    Ok(Json("Contact deleted"))
 }
 
 #[delete("/api/delete_user", format = "json", data = "<req>")]

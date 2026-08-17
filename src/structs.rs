@@ -404,6 +404,29 @@ pub struct PartASN {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct Contact {
+    pub email: String,
+    pub name:  String,
+    pub phone: String,
+    #[serde(default)]
+    pub duns:  String,
+    #[serde(default)]
+    pub scac:  String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct DunsContacts {
+    pub duns:     String,
+    pub contacts: Vec<Contact>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct CarrierContacts {
+    pub scac:     String,
+    pub contacts: Vec<Contact>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct PartASL {
     pub deck:     String,
     pub part:     String,
@@ -477,6 +500,11 @@ pub struct PartOut {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DeleteUserRequest {
     pub name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeleteContactRequest {
+    pub email: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
@@ -586,6 +614,9 @@ pub struct PartRoute {
     pub part:  String,
     pub duns:  String,
     pub route: String,
+    pub desc:  String,
+    #[serde(default)]
+    pub deck:  String,
     pub doh:   Option<f64>,
 }
 
