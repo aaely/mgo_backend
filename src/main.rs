@@ -51,6 +51,7 @@ impl AppState {
             jwt_secret: "tO7E8uCjD5rXpQl0FhKwV2yMz4bJnAi9sGeR3kTzXvNmPuLsDq8W".to_string(),
             alerted_parts: Arc::new(Mutex::new(HashMap::new())),
             edit_refs:     Arc::new(Mutex::new(HashMap::new())),
+            current_alerts: Arc::new(Mutex::new(Vec::new())),
             use_https,
         }
     }
@@ -112,8 +113,9 @@ async fn main() {
             let graph3  = state.graph.clone();
             let ws_list3 = state.ws_list.clone();
             let alerted = state.alerted_parts.clone();
+            let current_alerts = state.current_alerts.clone();
             tokio::spawn(async move {
-                part_monitoring_service(graph3, ws_list3, alerted).await;
+                part_monitoring_service(graph3, ws_list3, alerted, current_alerts).await;
             });
         })))
         .mount("/", FileServer::from("dist"))
@@ -137,6 +139,7 @@ async fn main() {
             get_lms_by_load,
             get_users_admin,
             get_contacts,
+            get_part_alerts,
             get_carriers,
             get_route_contacts,
             get_route_carrier_contacts,

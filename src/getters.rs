@@ -1471,6 +1471,14 @@ pub async fn get_part_asn(state: &State<AppState>) -> Json<Vec<PartASN>> {
     Json(parts)
 }
 
+#[get("/api/get_part_alerts")]
+pub async fn get_part_alerts(
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+) -> Json<Vec<PartAlert>> {
+    Json(state.current_alerts.lock().await.clone())
+}
+
 #[get("/api/get_contacts")]
 pub async fn get_contacts(
     state: &State<AppState>,

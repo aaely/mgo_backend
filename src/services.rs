@@ -102,6 +102,22 @@ pub async fn late_trailer_service(graph: Arc<Graph>, ws_list: WebSocketList) {
     }
 }
 
+fn level_rank(level: Option<&'static str>) -> u8 {
+    match level {
+        Some("Shut Down")      => 0,
+        Some("Emerging Issue") => 1,
+        Some("Hot")            => 2,
+        _                      => 3,
+    }
+}
+
+// Picks the more urgent of two classifications, so a thin rescue margin on the
+// ASN that just saved a part can raise the alert even when the *next* projected
+// outage (final_hours_to_out) is comfortably far away.
+fn worse_level(a: Option<&'static str>, b: Option<&'static str>) -> Option<&'static str> {
+    if level_rank(a) <= level_rank(b) { a } else { b }
+}
+
 struct AlertParams<'a> {
     part: &'a str,
     asl: &'a PartASL,
@@ -179,13 +195,20 @@ pub async fn part_monitoring_service(
     graph: Arc<Graph>,
     ws_list: WebSocketList,
     alerted_parts: Arc<Mutex<HashMap<String, chrono::DateTime<chrono::Local>>>>,
+    current_alerts: Arc<Mutex<Vec<PartAlert>>>,
 ) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60 * 15));
 
     loop {
         interval.tick().await;
 
-        let asl_query = query("MATCH (n:PartASL) WHERE n.cbal > 0 RETURN n");
+        let asl_query = query("MATCH (n:PartASL) WHERE n.cbal > 0
+                                      AND n.deck <> 'TT'
+                                      AND n.deck <> 'ST'
+                                      AND n.deck <> 'OB'
+                                      AND NOT n.deck CONTAINS 'O'
+                                      AND NOT n.deck CONTAINS 'X'
+                                      RETURN n");
         let asl_map: HashMap<String, PartASL> = match graph.execute(asl_query).await {
             Ok(mut result) => {
                 let mut map = HashMap::new();
@@ -290,6 +313,7 @@ pub async fn part_monitoring_service(
 
         let asn_query = query("
             MATCH (n:PartASN)
+            WHERE n.eta <> '11:11'
             RETURN n
             ORDER BY n.eda ASC, n.eta ASC
         ");
@@ -396,24 +420,29 @@ pub async fn part_monitoring_service(
                 else             { None }
             };
 
-            if let Some(level) = classify(final_hours_to_out) {
-                let (next_eda, next_eta, next_trailer) = asns_for_part
-                    .first()
+            {
+                let next_asn = asns_for_part.first();
+                let (next_eda, next_eta, next_trailer) = next_asn
                     .map(|(eda, eta, trailer, _)| (eda.clone(), eta.clone(), trailer.clone()))
                     .unwrap_or_default();
                 let next_asn_display = if next_eda.is_empty() { "N/A".to_string() }
                     else { format!("{} {}", next_eda, next_eta) };
-                let hours_until_rescue = asns_for_part
-                    .first()
+                let rescue_margin: Option<f64> = next_asn
                     .and_then(|(eda, eta, _, _)| parse_asn_arrival(eda, eta))
-                    .map(|arrival| (current_downtime_dt - arrival).num_minutes() as f64 / 60.0)
-                    .unwrap_or(0.0);
+                    .map(|arrival| (current_downtime_dt - arrival).num_minutes() as f64 / 60.0);
+                let hours_until_rescue = rescue_margin.unwrap_or(0.0);
 
-                dispatch_alert(
-                    AlertParams { part, asl, level, hours_to_out: final_hours_to_out,
-                        next_asn_display, next_trailer, hours_until_rescue },
-                    now, &alerted_parts, &mut alerts,
-                ).await;
+                // Alert if the eventual outage is close OR the ASN saving from
+                // the *current* outage only cleared it by a thin margin.
+                let level = worse_level(classify(final_hours_to_out), rescue_margin.and_then(classify));
+
+                if let Some(level) = level {
+                    dispatch_alert(
+                        AlertParams { part, asl, level, hours_to_out: final_hours_to_out,
+                            next_asn_display, next_trailer, hours_until_rescue },
+                        now, &alerted_parts, &mut alerts,
+                    ).await;
+                }
             }
 
             loop {
@@ -466,12 +495,20 @@ pub async fn part_monitoring_service(
                         break;
                     }
                     Some(idx) => {
+                        // Margin this ASN gave before the outage it just saved the part from —
+                        // must be measured against the *previous* downtime, not the next one.
+                        let prev_downtime_dt = current_downtime_dt;
+                        let hours_until_rescue =
+                            (prev_downtime_dt - arrival_dt).num_minutes() as f64 / 60.0;
+
                         current_downtime_dt = window_start + chrono::Duration::hours(idx as i64);
                         final_hours_to_out = idx as f64 - current_hour_offset as f64;
-                        let hours_until_rescue =
-                            (current_downtime_dt - arrival_dt).num_minutes() as f64 / 60.0;
 
-                        if let Some(level) = classify(final_hours_to_out) {
+                        // Alert if the next projected outage is close OR this save cleared
+                        // the previous outage by only a thin margin.
+                        let level = worse_level(classify(final_hours_to_out), classify(hours_until_rescue));
+
+                        if let Some(level) = level {
                             let (next_eda, next_eta, next_trailer) = asns_for_part
                                 .get(asn_index)
                                 .map(|(eda, eta, trailer, _)| (eda.clone(), eta.clone(), trailer.clone()))
@@ -490,6 +527,8 @@ pub async fn part_monitoring_service(
                 }
             }
         }
+
+        *current_alerts.lock().await = alerts.clone();
 
         if alerts.is_empty() {
             continue;

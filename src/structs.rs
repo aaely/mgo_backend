@@ -253,6 +253,7 @@ pub struct AppState {
     pub ws_list: WebSocketList,
     pub alerted_parts: Arc<Mutex<HashMap<String, chrono::DateTime<chrono::Local>>>>,
     pub edit_refs: Arc<Mutex<HashMap<String, HashMap<String, String>>>>,
+    pub current_alerts: Arc<Mutex<Vec<PartAlert>>>,
     pub use_https: bool,
 }
 
