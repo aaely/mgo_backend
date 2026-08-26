@@ -166,56 +166,6 @@ pub async fn get_lms_by_load(
     }
 }
 
-#[get("/api/get_part_info")]
-pub async fn get_part_info(
-    state: &State<AppState>,
-    _user: AuthenticatedUser,
-    role: Role,
-) -> Result<Json<Vec<PartInfo>>, Json<&'static str>> {
-
-    if role.0.contains("vaa") || role.0.contains("univ") {
-        return Err(Json("Forbidden"));
-    }
-
-    let graph = &state.graph;
-
-    let q = query("
-        MATCH (p:PartInfo)
-        RETURN p
-    ");
-
-    match graph.execute(q).await {
-        Ok(mut result) => {
-            let mut records: Vec<PartInfo> = Vec::new();
-
-            while let Ok(Some(row)) = result.next().await {
-                let p: Node = row.get("p").map_err(|_| {
-                    Json("Failed to get node from record")
-                })?;
-
-                records.push(PartInfo {
-                    number:   p.get("number").unwrap_or_default(),
-                    duns:     p.get("duns").unwrap_or_default(),
-                    supplier: p.get("supplier").unwrap_or_default(),
-                    desc:     p.get("desc").unwrap_or_default(),
-                    deck:     p.get("deck").unwrap_or_default(),
-                    dock:     p.get("dock").unwrap_or_default(),
-                });
-            }
-
-            if records.is_empty() {
-                Err(Json("No parts found"))
-            } else {
-                Ok(Json(records))
-            }
-        }
-        Err(e) => {
-            eprintln!("Failed to retrieve part information {:?}", e);
-            Err(Json("Failed to retrieve part information"))
-        }
-    }
-}
-
 #[get("/api/get_dy")]
 pub async fn get_dy(
     state: &State<AppState>,
@@ -1900,19 +1850,22 @@ pub async fn get_part_routes(
 ) -> Result<Json<Vec<PartRoute>>, Json<&'static str>> {
     let graph = &state.graph;
 
-    let q = query("MATCH (p:PartRoute) OPTIONAL MATCH (a:PartASL {part: p.part}) RETURN p.part AS part, p.duns AS duns, p.route AS route, p.desc AS desc, p.deck AS deck, a.doh AS doh");
+    let q = query("MATCH (p:PartRoute) OPTIONAL MATCH (a:PartASL {part: p.part}) RETURN p.part AS part, p.duns AS duns, p.route AS route, p.desc AS desc, p.deck AS deck, p.dock AS dock, p.country AS country, a.supplier AS supplier, a.doh AS doh");
 
     match graph.execute(q).await {
         Ok(mut result) => {
             let mut parts = Vec::new();
             while let Ok(Some(row)) = result.next().await {
                 parts.push(PartRoute {
-                    part:  row.get("part").unwrap_or_default(),
-                    duns:  row.get("duns").unwrap_or_default(),
-                    route: row.get("route").unwrap_or_default(),
-                    desc:  row.get("desc").unwrap_or_default(),
-                    deck:  row.get("deck").unwrap_or_default(),
-                    doh:   row.get("doh").ok(),
+                    part:     row.get("part").unwrap_or_default(),
+                    duns:     row.get("duns").unwrap_or_default(),
+                    route:    row.get("route").unwrap_or_default(),
+                    desc:     row.get("desc").unwrap_or_default(),
+                    deck:     row.get("deck").unwrap_or_default(),
+                    dock:     row.get("dock").unwrap_or_default(),
+                    country:  row.get("country").unwrap_or_default(),
+                    supplier: row.get("supplier").unwrap_or_default(),
+                    doh:      row.get("doh").ok(),
                 });
             }
             Ok(Json(parts))

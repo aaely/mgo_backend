@@ -2084,36 +2084,28 @@ pub async fn upload_part_route(
     for pr in data.iter() {
         let q = query("
             CREATE (n:PartRoute {
-                part:  $part,
-                duns:  $duns,
-                route: $route,
-                desc:  $desc,
-                deck:  $deck
+                part:    $part,
+                duns:    $duns,
+                route:   $route,
+                desc:    $desc,
+                deck:    $deck,
+                dock:    $dock,
+                country: $country
             })
         ")
-        .param("part",  pr.part.clone())
-        .param("duns",  pr.duns.clone())
-        .param("route", pr.route.clone())
-        .param("desc",  pr.desc.clone())
-        .param("deck",  pr.deck.clone());
+        .param("part",    pr.part.clone())
+        .param("duns",    pr.duns.clone())
+        .param("route",   pr.route.clone())
+        .param("desc",    pr.desc.clone())
+        .param("deck",    pr.deck.clone())
+        .param("dock",    pr.dock.clone())
+        .param("country", pr.country.clone());
 
         graph.run(q).await.map_err(|e| {
             eprintln!("Failed to upload PartRoute: {:?}", e);
             Json("Failed to upload PartRoute")
         })?;
     }
-
-    // ── Backfill deck from PartASL ──
-    let deck_query = query("
-        MATCH (p:PartRoute)
-        WITH p
-        MATCH (pa:PartASL {part: p.part})
-        SET p.deck = pa.deck
-    ");
-    graph.run(deck_query).await.map_err(|e| {
-        eprintln!("Failed to backfill PartRoute deck: {:?}", e);
-        Json("Failed to backfill PartRoute deck")
-    })?;
 
     // ── Link Route -> Duns (Duns already links to Contact via update_contact) ──
     let route_duns_query = query("

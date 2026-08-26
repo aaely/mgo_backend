@@ -210,21 +210,6 @@ pub struct DeliveredTrailer {
     pub Sids:         Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, PartialEq)]
-pub struct PartInfo {
-    pub number:   String,
-    pub duns:     String,
-    pub supplier: String,
-    pub desc:     String,
-    pub deck:     String,
-    pub dock:     String,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct PartInfoRequest {
-    pub part: String,
-}
-
 #[derive(Deserialize, Serialize)]
 pub struct DeliveryRequest {
     pub trailer_id: String
@@ -594,6 +579,12 @@ pub struct PartRoute {
     pub desc:  String,
     #[serde(default)]
     pub deck:  String,
+    #[serde(default)]
+    pub dock:  String,
+    #[serde(default)]
+    pub country: String,
+    #[serde(default)]
+    pub supplier: String,
     pub doh:   Option<f64>,
 }
 

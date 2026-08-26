@@ -129,7 +129,6 @@ async fn main() {
             roll_next_shift,
             ws_handler,
             refresh_token,
-            get_part_info,
             get_edock_asn,
             get_part_asn,
             get_part_asl,
