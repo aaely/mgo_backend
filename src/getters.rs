@@ -74,6 +74,7 @@ pub async fn get_lms_by_route(
     let q = query("
         MATCH (l:LMSRecord)
         WHERE toLower(l.route_id) CONTAINS toLower($route)
+        ORDER BY l.schedule_arrival_time
         RETURN l
     ").param("route", route);
 
@@ -383,8 +384,10 @@ pub async fn get_exceptions(
                     newTime:      node.get("newTime").unwrap_or_default(),
                     newEndDate:   node.get("newEndDate").unwrap_or_default(),
                     newEndTime:   node.get("newEndTime").unwrap_or_default(),
-                    comment:      node.get("comment").unwrap_or_default(),
-                    requestor:    node.get("requestor").unwrap_or_default(),
+                    comment:         node.get("comment").unwrap_or_default(),
+                    requestor:       node.get("requestor").unwrap_or_default(),
+                    isRepower:       node.get("isRepower").unwrap_or(false),
+                    repowerLoadNum:  node.get("repowerLoadNum").unwrap_or_default(),
                 };
                 entries.push(record);
             }
@@ -954,18 +957,20 @@ pub async fn get_shift_detail(
         MATCH (d:Day {date: $day_key})-[:HAS_SHIFT]->(s:Shift)
         OPTIONAL MATCH (s)-[r:ASSIGNED]->(u:User)
         OPTIONAL MATCH (s)-[c:DECK_COVERAGE]->(dk:Deck)
-        RETURN s.name AS shift,
-               collect(DISTINCT {
+        RETURN s.name   AS shift,
+               s.status AS shift_status,
+               [x IN collect(DISTINCT {
                    user_name: u.name,
+                   full_name: u.full_name,
                    role:      u.role,
                    position:  u.position,
                    task:      r.task,
                    task_type: r.task_type
-               }) AS assigned,
-               collect(DISTINCT {
+               }) WHERE x.user_name IS NOT NULL] AS assigned,
+               [x IN collect(DISTINCT {
                    deck:      dk.name,
                    user_name: c.user_name
-               }) AS deck_coverage
+               }) WHERE x.deck IS NOT NULL] AS deck_coverage
         ORDER BY s.name
     ")
     .param("day_key", day_key.clone());
@@ -974,13 +979,15 @@ pub async fn get_shift_detail(
         Ok(mut result) => {
             let mut details: Vec<ShiftDetail> = Vec::new();
             while let Ok(Some(row)) = result.next().await {
-                let shift:         String = row.get("shift").unwrap_or_default();
+                let shift:         String               = row.get("shift").unwrap_or_default();
+                let shift_status:  String               = row.get("shift_status").unwrap_or("active".to_string());
                 let assigned:      Vec<ShiftAssignment> = row.get("assigned").unwrap_or_default();
                 let deck_coverage: Vec<DeckCoverage>    = row.get("deck_coverage").unwrap_or_default();
 
                 details.push(ShiftDetail {
                     shift,
                     day_key: day_key.clone(),
+                    shift_status,
                     assigned,
                     deck_coverage,
                 });
@@ -1201,6 +1208,44 @@ pub async fn get_scan_parts(
     }
 
     Ok(Json(parts))
+}
+
+#[get("/scan/routes?<deck>")]
+pub async fn get_scan_routes(
+    state: &State<AppState>,
+    deck:  String,
+    role:  Role,
+) -> Result<Json<Vec<DeckRoute>>, Json<&'static str>> {
+
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err(Json("Forbidden"));
+    }
+
+    let graph = &state.graph;
+    let q = neo4rs::query("
+        MATCH (p:PartASL {deck: $deck})
+        MATCH (pr:PartRoute {part: p.part})
+        RETURN pr.route AS route, collect(DISTINCT pr.part) AS parts
+        ORDER BY pr.route
+    ")
+    .param("deck", deck);
+
+    match graph.execute(q).await {
+        Ok(mut result) => {
+            let mut routes: Vec<DeckRoute> = vec![];
+            while let Ok(Some(row)) = result.next().await {
+                routes.push(DeckRoute {
+                    route: row.get("route").unwrap_or_default(),
+                    parts: row.get("parts").unwrap_or_default(),
+                });
+            }
+            Ok(Json(routes))
+        }
+        Err(e) => {
+            eprintln!("get_scan_routes error: {e}");
+            Ok(Json(vec![]))
+        }
+    }
 }
 
 #[get("/scan/asn?<deck>&<part>")]
@@ -1426,6 +1471,152 @@ pub async fn get_part_asn(state: &State<AppState>) -> Json<Vec<PartASN>> {
     Json(parts)
 }
 
+#[get("/api/get_part_alerts")]
+pub async fn get_part_alerts(
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+) -> Json<Vec<PartAlert>> {
+    Json(state.current_alerts.lock().await.clone())
+}
+
+#[get("/api/get_contacts")]
+pub async fn get_contacts(
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+) -> Json<Vec<Contact>> {
+    let graph = &state.graph;
+
+    let q = query("MATCH (c:Contact) RETURN c");
+
+    let mut result = match graph.execute(q).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("get_contacts error: {e}");
+            return Json(vec![]);
+        }
+    };
+
+    let mut contacts: Vec<Contact> = vec![];
+    while let Ok(Some(row)) = result.next().await {
+        if let Ok(node) = row.get::<Node>("c") {
+            contacts.push(Contact {
+                email: node.get("email").unwrap_or_default(),
+                name:  node.get("name").unwrap_or_default(),
+                phone: node.get("phone").unwrap_or_default(),
+                duns:  node.get("duns").unwrap_or_default(),
+                scac:  node.get("scac").unwrap_or_default(),
+            });
+        }
+    }
+
+    Json(contacts)
+}
+
+#[get("/api/get_carriers")]
+pub async fn get_carriers(
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+) -> Json<Vec<String>> {
+    let graph = &state.graph;
+
+    let q = query("MATCH (c:Carrier) RETURN c.scac AS scac ORDER BY c.scac");
+
+    let mut result = match graph.execute(q).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("get_carriers error: {e}");
+            return Json(vec![]);
+        }
+    };
+
+    let mut carriers: Vec<String> = vec![];
+    while let Ok(Some(row)) = result.next().await {
+        carriers.push(row.get("scac").unwrap_or_default());
+    }
+
+    Json(carriers)
+}
+
+#[get("/api/get_route_contacts?<route>")]
+pub async fn get_route_contacts(
+    state: &State<AppState>,
+    route: String,
+    _user: AuthenticatedUser,
+) -> Result<Json<Vec<DunsContacts>>, Json<&'static str>> {
+    let graph = &state.graph;
+
+    let q = query("
+        MATCH (r:Route {route: $route})-[:HAS_DUNS]->(d:Duns)
+        OPTIONAL MATCH (d)-[:HAS_CONTACT]->(c:Contact)
+        RETURN d.duns AS duns,
+               [x IN collect(DISTINCT {
+                   email: c.email,
+                   name:  c.name,
+                   phone: c.phone,
+                   duns:  c.duns
+               }) WHERE x.email IS NOT NULL] AS contacts
+        ORDER BY d.duns
+    ")
+    .param("route", route);
+
+    match graph.execute(q).await {
+        Ok(mut result) => {
+            let mut groups: Vec<DunsContacts> = Vec::new();
+            while let Ok(Some(row)) = result.next().await {
+                groups.push(DunsContacts {
+                    duns:     row.get("duns").unwrap_or_default(),
+                    contacts: row.get("contacts").unwrap_or_default(),
+                });
+            }
+            Ok(Json(groups))
+        }
+        Err(e) => {
+            eprintln!("Failed to get route contacts: {:?}", e);
+            Err(Json("Failed to get route contacts"))
+        }
+    }
+}
+
+#[get("/api/get_route_carrier_contacts?<route>")]
+pub async fn get_route_carrier_contacts(
+    state: &State<AppState>,
+    route: String,
+    _user: AuthenticatedUser,
+) -> Result<Json<Vec<CarrierContacts>>, Json<&'static str>> {
+    let graph = &state.graph;
+
+    let q = query("
+        MATCH (car:Carrier)-[:HAS_ROUTE]->(r:Route {route: $route})
+        OPTIONAL MATCH (car)-[:HAS_CONTACT]->(c:Contact)
+        RETURN car.scac AS scac,
+               [x IN collect(DISTINCT {
+                   email: c.email,
+                   name:  c.name,
+                   phone: c.phone,
+                   scac:  c.scac
+               }) WHERE x.email IS NOT NULL] AS contacts
+        ORDER BY car.scac
+    ")
+    .param("route", route);
+
+    match graph.execute(q).await {
+        Ok(mut result) => {
+            let mut groups: Vec<CarrierContacts> = Vec::new();
+            while let Ok(Some(row)) = result.next().await {
+                groups.push(CarrierContacts {
+                    scac:     row.get("scac").unwrap_or_default(),
+                    contacts: row.get("contacts").unwrap_or_default(),
+                });
+            }
+            Ok(Json(groups))
+        }
+        Err(e) => {
+            eprintln!("Failed to get route carrier contacts: {:?}", e);
+            Err(Json("Failed to get route carrier contacts"))
+        }
+    }
+}
+
 #[get("/api/get_part_asl")]
 pub async fn get_part_asl(state: &State<AppState>) -> Json<Vec<PartASL>> {
     let graph = &state.graph;
@@ -1476,59 +1667,70 @@ pub async fn get_dock_count(
     _user: AuthenticatedUser,
 ) -> Result<Json<DockCountResponse>, Json<&'static str>> {
     let graph = &state.graph;
-    let mut hr_total: u32 = 0;
     let mut shift_total: u32 = 0;
 
     let hour_u32: u32 = hour.parse().unwrap_or(0);
     let win = get_shift_window(&date, hour_u32);
 
     // ── Per-hour counts ──
+    let hour_dates: Vec<(String, String)> = win.hours1.iter()
+        .map(|h| (h.clone(), win.date1.clone()))
+        .chain(win.hours2.iter().map(|h| (h.clone(), win.date2.clone())))
+        .collect();
 
-    let q1 = query("
-        MATCH (e:ExceptionLogEntry)
-        WHERE e.newDate = $date AND e.dock = $dock AND substring(e.newTime, 0, 2) = $hour
-        RETURN count(e) AS cnt
-    ")
-    .param("date", date.clone())
-    .param("dock", dock.clone())
-    .param("hour", hour.clone());
+    let mut hourly: Vec<HourCount> = Vec::new();
 
-    if let Ok(mut result) = graph.execute(q1).await {
-        if let Ok(Some(row)) = result.next().await {
-            hr_total += row.get::<i64>("cnt").unwrap_or(0) as u32;
+    for (hr, date_for_hr) in &hour_dates {
+        let mut count: u32 = 0;
+
+        let q1 = query("
+            MATCH (e:ExceptionLogEntry)
+            WHERE e.newDate = $date AND e.dock = $dock AND substring(e.newTime, 0, 2) = $hour
+            RETURN count(e) AS cnt
+        ")
+        .param("date", date_for_hr.clone())
+        .param("dock", dock.clone())
+        .param("hour", hr.clone());
+
+        if let Ok(mut result) = graph.execute(q1).await {
+            if let Ok(Some(row)) = result.next().await {
+                count += row.get::<i64>("cnt").unwrap_or(0) as u32;
+            }
         }
-    }
 
-    let q2 = query("
-        MATCH (d:DyCommLogEntry)
-        WHERE d.deliveryDate = $date AND d.dock = $dock AND substring(d.deliveryTime, 0, 2) = $hour
-        RETURN count(d) AS cnt
-    ")
-    .param("date", date.clone())
-    .param("dock", dock.clone())
-    .param("hour", hour.clone());
+        let q2 = query("
+            MATCH (d:DyCommLogEntry)
+            WHERE d.deliveryDate = $date AND d.dock = $dock AND substring(d.deliveryTime, 0, 2) = $hour
+            RETURN count(d) AS cnt
+        ")
+        .param("date", date_for_hr.clone())
+        .param("dock", dock.clone())
+        .param("hour", hr.clone());
 
-    if let Ok(mut result) = graph.execute(q2).await {
-        if let Ok(Some(row)) = result.next().await {
-            hr_total += row.get::<i64>("cnt").unwrap_or(0) as u32;
+        if let Ok(mut result) = graph.execute(q2).await {
+            if let Ok(Some(row)) = result.next().await {
+                count += row.get::<i64>("cnt").unwrap_or(0) as u32;
+            }
         }
-    }
 
-    let q3 = query("
-        MATCH (l:LMSRecord)
-        WHERE l.schedule_arrival_time STARTS WITH $date
-          AND l.dock = $dock
-          AND substring(l.schedule_arrival_time, 11, 2) = $hour
-        RETURN count(l) AS cnt
-    ")
-    .param("date", date.clone())
-    .param("dock", dock.clone())
-    .param("hour", hour.clone());
+        let q3 = query("
+            MATCH (l:LMSRecord)
+            WHERE l.schedule_arrival_time STARTS WITH $date
+              AND l.dock = $dock
+              AND substring(l.schedule_arrival_time, 11, 2) = $hour
+            RETURN count(l) AS cnt
+        ")
+        .param("date", date_for_hr.clone())
+        .param("dock", dock.clone())
+        .param("hour", hr.clone());
 
-    if let Ok(mut result) = graph.execute(q3).await {
-        if let Ok(Some(row)) = result.next().await {
-            hr_total += row.get::<i64>("cnt").unwrap_or(0) as u32;
+        if let Ok(mut result) = graph.execute(q3).await {
+            if let Ok(Some(row)) = result.next().await {
+                count += row.get::<i64>("cnt").unwrap_or(0) as u32;
+            }
         }
+
+        hourly.push(HourCount { hour: hr.clone(), count });
     }
 
     // ── Shift-window counts ──
@@ -1590,7 +1792,7 @@ pub async fn get_dock_count(
         }
     }
 
-    Ok(Json(DockCountResponse { hr_total, shift_total }))
+    Ok(Json(DockCountResponse { hourly, shift_total }))
 }
 
 #[get("/api/get_hot_parts")]
@@ -1687,6 +1889,37 @@ pub async fn get_audit_events(
         Err(e) => {
             eprintln!("Failed to get audit events: {:?}", e);
             Err(Json("Failed to get audit events"))
+        }
+    }
+}
+
+#[get("/api/get_part_routes")]
+pub async fn get_part_routes(
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+) -> Result<Json<Vec<PartRoute>>, Json<&'static str>> {
+    let graph = &state.graph;
+
+    let q = query("MATCH (p:PartRoute) OPTIONAL MATCH (a:PartASL {part: p.part}) RETURN p.part AS part, p.duns AS duns, p.route AS route, p.desc AS desc, p.deck AS deck, a.doh AS doh");
+
+    match graph.execute(q).await {
+        Ok(mut result) => {
+            let mut parts = Vec::new();
+            while let Ok(Some(row)) = result.next().await {
+                parts.push(PartRoute {
+                    part:  row.get("part").unwrap_or_default(),
+                    duns:  row.get("duns").unwrap_or_default(),
+                    route: row.get("route").unwrap_or_default(),
+                    desc:  row.get("desc").unwrap_or_default(),
+                    deck:  row.get("deck").unwrap_or_default(),
+                    doh:   row.get("doh").ok(),
+                });
+            }
+            Ok(Json(parts))
+        }
+        Err(e) => {
+            eprintln!("Failed to get part routes: {:?}", e);
+            Err(Json("Failed to get part routes"))
         }
     }
 }

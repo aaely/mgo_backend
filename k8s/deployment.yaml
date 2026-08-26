@@ -14,10 +14,18 @@ spec:
         app: mgo-backend
     spec:
       serviceAccountName: mgo-backend
-      # OpenShift restricts root; run as UID 1001 (group 0 per Dockerfile)
+      # Created imperatively, never committed here — see k8s/README notes.
+      # oc create secret docker-registry mgo-backend-pull-secret \
+      #   --docker-server=<your-registry> --docker-username=<user> \
+      #   --docker-password=<password> -n mgo
+      imagePullSecrets:
+        - name: mgo-backend-pull-secret
+      # Let OpenShift assign the arbitrary UID from the namespace's allocated
+      # range (default restricted SCC rejects a pinned runAsUser like 1001).
+      # It's always in group 0, which is what the Dockerfile's chown/chmod g=u
+      # relies on — no runAsUser needed here.
       securityContext:
         runAsNonRoot: true
-        runAsUser: 1001
         fsGroup: 0
       containers:
         - name: mgo-backend

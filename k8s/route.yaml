@@ -37,7 +37,7 @@ spec:
     targetPort: ws
   tls:
     termination: edge
-    insecureEdgeTerminationPolicy: Allow   # allow plain WS fallback if needed
+    # No insecureEdgeTerminationPolicy — plain ws:// is refused, wss:// only.
   to:
     kind: Service
     name: mgo-backend-service

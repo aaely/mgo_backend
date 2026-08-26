@@ -53,78 +53,40 @@ pub async fn login(
     login_request: Json<LoginRequest>,
     state: &State<AppState>,
 ) -> Result<Json<LoginResponse>, (Status, Json<String>)> {
-    let ldap_url    = std::env::var("LDAP_URL").unwrap_or_else(|_| "ldap://localhost:389".to_string());
-    let base_dn     = std::env::var("LDAP_BASE_DN").unwrap_or_else(|_| "DC=corp,DC=com".to_string());
-    let search_base = std::env::var("LDAP_USER_SEARCH_BASE").unwrap_or_else(|_| base_dn.clone());
-    let domain      = std::env::var("LDAP_DOMAIN").unwrap_or_else(|_| "corp.com".to_string());
+    let graph = &state.graph;
 
-    let username = login_request.username.trim();
-    let password = &login_request.password;
+    let ldap_user = crate::ldap_auth::authenticate(&login_request.username, &login_request.password)
+        .await
+        .map_err(|e| (Status::Unauthorized, Json(e.to_string())))?;
 
-    let upn = if username.contains('@') {
-        username.to_string()
-    } else {
-        format!("{}@{}", username, domain)
-    };
+    let username = login_request.username.clone();
+    let role = ldap_user.role;
 
-    let (conn, mut ldap) = LdapConnAsync::new(&ldap_url).await
-        .map_err(|e| (Status::InternalServerError, Json(format!("LDAP connection failed: {e}"))))?;
-    ldap3::drive!(conn);
+    // Auto-provision the :User node on first login; role is re-synced from
+    // AD group membership on every login, other fields are admin-managed
+    // (Manage Users) and only get sane defaults the first time.
+    graph.run(
+        query("
+            MERGE (u:User {name: $username})
+            ON CREATE SET u.full_name = '', u.position = '', u.shift = '', u.slack_id = ''
+            SET u.role = $role
+        ")
+        .param("username", username.clone())
+        .param("role",     role.clone()),
+    ).await.map_err(|e| (Status::InternalServerError, Json(e.to_string())))?;
 
-    ldap.simple_bind(&upn, password).await
-        .map_err(|_| (Status::Unauthorized, Json("Invalid credentials".to_string())))?
-        .success()
-        .map_err(|_| (Status::Unauthorized, Json("Invalid credentials".to_string())))?;
-
-    let (results, _) = ldap.search(
-        &search_base,
-        Scope::Subtree,
-        &format!("(userPrincipalName={})", upn),
-        vec!["memberOf"],
-    ).await
-        .map_err(|e| (Status::InternalServerError, Json(format!("LDAP search failed: {e}"))))?
-        .success()
-        .map_err(|e| (Status::InternalServerError, Json(format!("LDAP search failed: {e}"))))?;
-
-    const ROLE_PRIORITY: &[&str] = &["admin", "manager", "supervisor", "vaa", "univ", "read"];
-
-    let role = results.into_iter()
-        .next()
-        .map(|entry| {
-            let entry = SearchEntry::construct(entry);
-            let group_names: Vec<String> = entry.attrs
-                .get("memberOf")
-                .map(|groups| {
-                    groups.iter()
-                        .filter_map(|dn| {
-                            dn.split(',').next()
-                                .and_then(|cn| cn.strip_prefix("CN="))
-                                .map(|s| s.to_lowercase())
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            ROLE_PRIORITY.iter()
-                .find(|&&r| group_names.contains(&r.to_string()))
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "read".to_string())
-        })
-        .unwrap_or_else(|| "read".to_string());
-
-    ldap.unbind().await.ok();
-
-    let access_token = issue_access_token(username, &role, &state.jwt_secret)
+    let access_token = issue_access_token(&username, &role, &state.jwt_secret)
         .map_err(|e| (Status::InternalServerError, Json(e.to_string())))?;
 
     let refresh_token = uuid::Uuid::new_v4().to_string();
-    store_refresh_token(&state.graph, &refresh_token, username, &role).await
+    store_refresh_token(graph, &refresh_token, &username, &role).await
         .map_err(|e| (Status::InternalServerError, Json(format!("Failed to store refresh token: {e}"))))?;
 
     jar.add(make_cookie("f126f1b7d90a5bd5", access_token));
     jar.add(make_cookie("738fadeef720a679", refresh_token));
 
     Ok(Json(LoginResponse {
-        user: UserResponse { username: username.to_string(), role },
+        user: UserResponse { username, role },
     }))
 }
 
@@ -296,4 +258,3 @@ pub async fn sso_login(
         user: UserResponse { username: username.clone(), role },
     }))
 }
-

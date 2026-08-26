@@ -9,12 +9,15 @@ mod setters;
 mod wsserver;
 mod helpers;
 mod emailer;
+mod services;
+mod ldap_auth;
 use rocket::data::ToByteUnit;
 use rocket::{get, routes};
 use rocket::fs::{FileServer, NamedFile};
 use rocket::config::TlsConfig;
 use neo4rs::Graph;
-use structs::{AppState, late_trailer_service, part_monitoring_service};
+use structs::AppState;
+use services::{late_trailer_service, part_monitoring_service};
 use tokio::sync::Mutex;
 use std::{collections::HashMap, sync::Arc};
 use rocket_cors::{CorsOptions, AllowedHeaders};
@@ -54,6 +57,7 @@ impl AppState {
             jwt_secret,
             alerted_parts: Arc::new(Mutex::new(HashMap::new())),
             edit_refs:     Arc::new(Mutex::new(HashMap::new())),
+            current_alerts: Arc::new(Mutex::new(Vec::new())),
             use_https,
         }
     }
@@ -115,8 +119,9 @@ async fn main() {
             let graph3  = state.graph.clone();
             let ws_list3 = state.ws_list.clone();
             let alerted = state.alerted_parts.clone();
+            let current_alerts = state.current_alerts.clone();
             tokio::spawn(async move {
-                part_monitoring_service(graph3, ws_list3, alerted).await;
+                part_monitoring_service(graph3, ws_list3, alerted, current_alerts).await;
             });
         })))
         .mount("/", FileServer::from("dist"))
@@ -140,6 +145,13 @@ async fn main() {
             get_lms_by_route,
             get_lms_by_load,
             get_users_admin,
+            get_contacts,
+            get_part_alerts,
+            get_carriers,
+            get_route_contacts,
+            get_route_carrier_contacts,
+            update_contact,
+            delete_contact,
             get_dy,
             get_trailers_grouped,
             update_user_position,
@@ -149,6 +161,7 @@ async fn main() {
             upload_on_deck,
             upload_part_asl,
             upload_part_asn,
+            upload_part_route,
             upload_part_out,
             update_io,
             update_live_trailer,
@@ -170,6 +183,8 @@ async fn main() {
             get_week,
             assign_shift,
             unassign_shift,
+            get_scan_routes,
+            get_part_routes,
             get_exceptions,
             upload_exception,
             delivered,

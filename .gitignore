@@ -5,7 +5,6 @@
 Cargo.lock
 
 # Ignore the .env file (if you have one)
-.env
 .claude
 .netlify
 # Ignore build artifacts and other unnecessary files

@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: neo4j
+  namespace: mgo
+spec:
+  replicas: 1   # Community edition doesn't cluster, and the PVC below is
+                # ReadWriteOnce anyway — don't scale this past 1.
+  strategy:
+    type: Recreate   # avoid two pods fighting over the same RWO volume
+  selector:
+    matchLabels:
+      app: neo4j
+  template:
+    metadata:
+      labels:
+        app: neo4j
+    spec:
+      serviceAccountName: neo4j
+      containers:
+        - name: neo4j
+          image: neo4j:5-community   # ← pin to whatever version you want
+          envFrom:
+            - secretRef:
+                name: neo4j-secret
+          ports:
+            - containerPort: 7474   # HTTP (Neo4j Browser)
+            - containerPort: 7687   # Bolt
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: logs
+              mountPath: /logs
+            - name: conf
+              mountPath: /conf
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 7474
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 7474
+            initialDelaySeconds: 60
+            periodSeconds: 15
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: neo4j-data
+        # logs and conf don't need to persist across restarts — the image's
+        # own defaults live under these paths and just need to be *writable*,
+        # which any mounted volume gets for free via OpenShift's auto-assigned
+        # fsGroup. emptyDir keeps this simple without a second PVC.
+        - name: logs
+          emptyDir: {}
+        - name: conf
+          emptyDir: {}
