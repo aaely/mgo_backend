@@ -587,30 +587,6 @@ pub struct AuditEvent {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct WipePasswordRequest {
-    pub username: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ForgotPasswordRequest {
-    pub username: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ResetPasswordRequest {
-    pub username:     String,
-    pub token:        String,
-    pub new_password: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ChangePasswordRequest {
-    pub username:     String,
-    pub old_password: String,
-    pub new_password: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct PartRoute {
     pub part:  String,
     pub duns:  String,

@@ -10,6 +10,7 @@ mod wsserver;
 mod helpers;
 mod emailer;
 mod services;
+mod ldap_auth;
 use rocket::data::ToByteUnit;
 use rocket::{get, routes};
 use rocket::fs::{FileServer, NamedFile};
@@ -43,12 +44,18 @@ fn custom_cors() -> rocket_cors::Cors {
 
 impl AppState {
     pub async fn new(use_https: bool) -> Self {
-        let graph = Graph::new("bolt://localhost:7687", "neo4j", "Asdf123$").await.unwrap();
+        let neo4j_uri      = std::env::var("NEO4J_URI").unwrap_or_else(|_| "bolt://localhost:7687".to_string());
+        let neo4j_user     = std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
+        let neo4j_password = std::env::var("NEO4J_PASSWORD").unwrap_or_else(|_| "Asdf123$".to_string());
+        let jwt_secret     = std::env::var("JWT_SECRET")
+            .unwrap_or_else(|_| "tO7E8uCjD5rXpQl0FhKwV2yMz4bJnAi9sGeR3kTzXvNmPuLsDq8W".to_string());
+
+        let graph = Graph::new(&neo4j_uri, &neo4j_user, &neo4j_password).await.unwrap();
 
         AppState {
             ws_list: Arc::new(Mutex::new(HashMap::new())),
             graph: Arc::new(graph),
-            jwt_secret: "tO7E8uCjD5rXpQl0FhKwV2yMz4bJnAi9sGeR3kTzXvNmPuLsDq8W".to_string(),
+            jwt_secret,
             alerted_parts: Arc::new(Mutex::new(HashMap::new())),
             edit_refs:     Arc::new(Mutex::new(HashMap::new())),
             current_alerts: Arc::new(Mutex::new(Vec::new())),
@@ -183,7 +190,6 @@ async fn main() {
             delivered,
             upload_dycomm,
             upload_in_transit,
-            register,
             upload_lms,
             push_reschedules,
             create_hot_part,
@@ -191,10 +197,6 @@ async fn main() {
             send_email_route,
             logout,
             get_audit_events,
-            wipe_password,
-            forgot_password,
-            reset_password,
-            change_password,
             spa_fallback
             ])
         .manage(state)

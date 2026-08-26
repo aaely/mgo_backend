@@ -1,0 +1,44 @@
+# OpenShift Routes — the Router (HAProxy) terminates TLS and forwards plain HTTP/WS to the pod.
+# The hostname is auto-generated as <name>-<namespace>.apps.<cluster-domain> if omitted.
+# Set an explicit host once you know your cluster's .apps domain.
+
+# ── App traffic (HTTP → HTTPS, edge TLS termination) ──────────────────────────
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mgo-backend
+  namespace: mgo
+spec:
+  # host: mgo.apps.your-cluster.com   # uncomment and set your hostname
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  to:
+    kind: Service
+    name: mgo-backend-service
+    weight: 100
+
+---
+
+# ── WebSocket traffic (WS → WSS, edge TLS termination) ────────────────────────
+# Large timeout so long-lived WS connections aren't dropped by the Router.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: mgo-backend-ws
+  namespace: mgo
+  annotations:
+    haproxy.router.openshift.io/timeout: 24h
+spec:
+  # host: mgo-ws.apps.your-cluster.com   # uncomment and set your hostname
+  port:
+    targetPort: ws
+  tls:
+    termination: edge
+    # No insecureEdgeTerminationPolicy — plain ws:// is refused, wss:// only.
+  to:
+    kind: Service
+    name: mgo-backend-service
+    weight: 100
