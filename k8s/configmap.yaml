@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: mgo-backend-config
-  namespace: mgo          # ← your namespace
+  namespace: 7372268-test          # ← your namespace
 data:
   NEO4J_URI: "bolt://neo4j-service:7687"           # ← Neo4j bolt address (in-cluster service or external)
   NEO4J_USER: "neo4j"

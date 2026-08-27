@@ -7,7 +7,7 @@ apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
   name: mgo-backend
-  namespace: mgo
+  namespace: 7372268-test
 spec:
   # host: mgo.apps.your-cluster.com   # uncomment and set your hostname
   port:
@@ -28,7 +28,7 @@ apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
   name: mgo-backend-ws
-  namespace: mgo
+  namespace: 7372268-test
   annotations:
     haproxy.router.openshift.io/timeout: 24h
 spec:

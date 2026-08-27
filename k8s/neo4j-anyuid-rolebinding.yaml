@@ -10,18 +10,18 @@
 # writes somewhere new), the two options are: (a) mount an emptyDir over that
 # specific path too, or (b) apply this RoleBinding as a last resort. It's the
 # declarative equivalent of:
-#   oc adm policy add-scc-to-user anyuid -z neo4j -n mgo
+#   oc adm policy add-scc-to-user anyuid -z neo4j -n 7372268-test
 # and requires a user/SA with permission to grant SCCs (usually cluster-admin
 # or a delegated admin) — same requirement as the oc command.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: neo4j-anyuid
-  namespace: mgo
+  namespace: 7372268-test
 subjects:
   - kind: ServiceAccount
     name: neo4j
-    namespace: mgo
+    namespace: 7372268-test
 roleRef:
   kind: ClusterRole
   name: system:openshift:scc:anyuid

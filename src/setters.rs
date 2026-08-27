@@ -788,7 +788,6 @@ pub async fn roll_next_shift(
             actualStartTime:    t.actualStartTime,
             actualEndTime:      t.actualEndTime,
             statusOX:           CASE
-                                    WHEN t.gateArrivalTime <> '' AND (t.actualEndTime = '' OR t.actualEndTime IS NULL) THEN 'C'
                                     WHEN t.gateArrivalTime = '' AND t.actualEndTime = '' THEN 'N'
                                     ELSE t.statusOX
                                 END,
@@ -894,6 +893,7 @@ pub async fn roll_next_shift(
             Ok(out) => {
                 eprintln!("Backup command failed: {}", String::from_utf8_lossy(&out.stderr));
             }
+
             Err(e) => {
                 eprintln!("Failed to run neo4j-admin: {:?}", e);
             }

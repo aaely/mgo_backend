@@ -1,0 +1,46 @@
+# Local testing only — runs the "database server" (neo4j) and "application
+# server" (mgo-backend) as two containers wired together, without needing an
+# OpenShift cluster. Mirrors what k8s/neo4j-deployment.yaml + k8s/deployment.yaml
+# do in the real cluster: two separate pods talking over an internal service name.
+#
+# Run from this directory:  docker compose up --build
+# Neo4j Browser: http://localhost:7474  (user: neo4j / password below)
+# App:           http://localhost:8000
+
+services:
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: neo4j/testpassword123
+    ports:
+      - "7474:7474"   # Neo4j Browser (HTTP)
+      - "7687:7687"   # Bolt
+    volumes:
+      - neo4j-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  mgo-backend:
+    build:
+      context: ..
+      dockerfile: mgo_backend/Dockerfile
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Override .env's localhost value — inside compose's network, the DB is
+      # reachable at the service name "neo4j", not localhost.
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: testpassword123
+    ports:
+      - "8000:8000"   # HTTP
+      - "9001:9001"   # WebSocket
+
+volumes:
+  neo4j-data:

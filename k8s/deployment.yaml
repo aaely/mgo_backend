@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: mgo-backend
-  namespace: mgo
+  namespace: 7372268-test
 spec:
   replicas: 2
   selector:
@@ -14,12 +14,12 @@ spec:
         app: mgo-backend
     spec:
       serviceAccountName: mgo-backend
-      # Created imperatively, never committed here — see k8s/README notes.
+      # Pulling from this namespace's own internal registry — OpenShift auto-grants
+      # pull access to service accounts in the same namespace, no imagePullSecrets
+      # needed. Only add one back if you switch to an external registry:
       # oc create secret docker-registry mgo-backend-pull-secret \
       #   --docker-server=<your-registry> --docker-username=<user> \
-      #   --docker-password=<password> -n mgo
-      imagePullSecrets:
-        - name: mgo-backend-pull-secret
+      #   --docker-password=<password> -n 7372268-test
       # Let OpenShift assign the arbitrary UID from the namespace's allocated
       # range (default restricted SCC rejects a pinned runAsUser like 1001).
       # It's always in group 0, which is what the Dockerfile's chown/chmod g=u
@@ -29,7 +29,7 @@ spec:
         fsGroup: 0
       containers:
         - name: mgo-backend
-          image: your-registry/mgo-backend:latest
+          image: image-registry.openshift-image-registry.svc:5000/7372268-test/mgo-backend:latest
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
