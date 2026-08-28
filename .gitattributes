@@ -1,0 +1,5 @@
+# Shell scripts get COPYd into Linux containers and run via their #!/bin/sh
+# shebang — CRLF line endings break that (shebang becomes unparseable). Force
+# LF regardless of the checkout machine's core.autocrlf setting.
+*.sh text eol=lf
+Dockerfile* text eol=lf

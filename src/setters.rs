@@ -808,7 +808,48 @@ pub async fn roll_next_shift(
         Json("Failed to snapshot live trailers")
     })?;
 
-    // ── Query 2: Delete LiveTrailers where actualEndTime is not empty ──
+    // ── Query 2: Push rescheduled (statusOX = 'R') LiveTrailers into RescheduledTrailer ──
+    let reschedule_query = query("
+        MATCH (t:LiveTrailer)
+        WHERE t.statusOX = 'R'
+        CREATE (r:RescheduledTrailer {
+            uuid:              t.uuid,
+            hour:              t.hour,
+            dateShift:         t.dateShift,
+            lmsAccent:         t.lmsAccent,
+            dockCode:          t.dockCode,
+            acaType:           t.acaType,
+            status:            t.status,
+            routeId:           t.routeId,
+            scac:              t.scac,
+            trailer1:          t.trailer1,
+            trailer2:          t.trailer2,
+            firstSupplier:     t.firstSupplier,
+            dockStopSequence:  t.dockStopSequence,
+            planStartDate:     t.planStartDate,
+            planStartTime:     t.planStartTime,
+            scheduleStartDate: t.scheduleStartDate,
+            adjustedStartTime: t.adjustedStartTime,
+            scheduleEndDate:   t.scheduleEndDate,
+            scheduleEndTime:   t.scheduleEndTime,
+            gateArrivalTime:   t.gateArrivalTime,
+            actualStartTime:   t.actualStartTime,
+            actualEndTime:     t.actualEndTime,
+            statusOX:          t.statusOX,
+            lowestDoh:         t.lowestDoh,
+            loadComments:      t.loadComments,
+            ryderComments:     t.ryderComments,
+            lateComments:      t.lateComments,
+            gmComments:        t.gmComments
+        })
+    ");
+
+    graph.run(reschedule_query).await.map_err(|e| {
+        eprintln!("Failed to push rescheduled trailers: {:?}", e);
+        Json("Failed to push rescheduled trailers")
+    })?;
+
+    // ── Query 3: Delete LiveTrailers where actualEndTime is not empty ──
     let delete_query = query("
         MATCH (t:LiveTrailer)
         WHERE t.gateArrivalTime <> '' AND (t.actualEndTime <> '' OR t.actualEndTime IS NULL)
@@ -820,7 +861,7 @@ pub async fn roll_next_shift(
         Json("Failed to delete completed live trailers")
     })?;
 
-    // ── Query 3: Set statusOX = 'C' on remaining LiveTrailers ──
+    // ── Query 4: Set statusOX = 'C' on remaining LiveTrailers ──
     let status_query = query("
         MATCH (t:LiveTrailer)
         SET t.statusOX = CASE
@@ -834,7 +875,7 @@ pub async fn roll_next_shift(
         Json("Failed to update statusOX on live trailers")
     })?;
 
-    // ── Query 4: Promote StagedTrailers to LiveTrailers and delete StagedTrailer nodes ──
+    // ── Query 5: Promote StagedTrailers to LiveTrailers and delete StagedTrailer nodes ──
     let promote_query = query("
         MATCH (s:StagedTrailer)
         CREATE (t:LiveTrailer {
