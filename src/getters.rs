@@ -907,6 +907,7 @@ pub async fn get_shift_detail(
         MATCH (d:Day {date: $day_key})-[:HAS_SHIFT]->(s:Shift)
         OPTIONAL MATCH (s)-[r:ASSIGNED]->(u:User)
         OPTIONAL MATCH (s)-[c:DECK_COVERAGE]->(dk:Deck)
+        OPTIONAL MATCH (cu:User {name: c.user_name})
         RETURN s.name   AS shift,
                s.status AS shift_status,
                [x IN collect(DISTINCT {
@@ -919,7 +920,8 @@ pub async fn get_shift_detail(
                }) WHERE x.user_name IS NOT NULL] AS assigned,
                [x IN collect(DISTINCT {
                    deck:      dk.name,
-                   user_name: c.user_name
+                   user_name: c.user_name,
+                   slack_id:  cu.slack_id
                }) WHERE x.deck IS NOT NULL] AS deck_coverage
         ORDER BY s.name
     ")
@@ -1079,6 +1081,79 @@ pub async fn get_users_admin(
         Err(e) => {
             eprintln!("Failed to fetch users: {:?}", e);
             Err(Json("Failed to fetch users"))
+        }
+    }
+}
+
+#[get("/api/get_deck_by_route?<route>")]
+pub async fn get_deck_by_route(
+    route: &str,
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+) -> Result<Json<String>, Json<&'static str>> {
+    let graph  = &state.graph;
+    let prefix = route.to_lowercase();
+    let q = neo4rs::query("
+        MATCH (r:PartRoute) WHERE toLower(r.route) STARTS WITH $prefix
+        MATCH (p:PartASL {part: r.part})
+        RETURN p.deck AS deck LIMIT 1
+    ").param("prefix", prefix);
+
+    match graph.execute(q).await {
+        Ok(mut result) => {
+            if let Ok(Some(row)) = result.next().await {
+                Ok(Json(row.get("deck").unwrap_or_default()))
+            } else {
+                Err(Json("Not found"))
+            }
+        }
+        Err(e) => {
+            eprintln!("get_deck_by_route error: {e}");
+            Err(Json("Query failed"))
+        }
+    }
+}
+
+#[get("/api/get_deck_assignee_slack?<route>")]
+pub async fn get_deck_assignee_slack(
+    route:  &str,
+    state:  &State<AppState>,
+    _user:  AuthenticatedUser,
+) -> Result<Json<String>, Json<&'static str>> {
+    use chrono::{Local, Timelike};
+    let graph  = &state.graph;
+    let prefix = route.to_lowercase();
+    let now    = Local::now();
+    let h      = now.hour();
+    let shift  = if h >= 6 && h < 14 { "1st" } else if h >= 14 && h < 22 { "2nd" } else { "3rd" };
+    let date   = now.format("%Y-%m-%d").to_string();
+    let day_key = format!("{}_0", date);
+
+    let q = neo4rs::query("
+        MATCH (r:PartRoute) WHERE toLower(r.route) STARTS WITH $prefix
+        MATCH (p:PartASL {part: r.part})
+        WITH p.deck AS deck LIMIT 1
+        MATCH (d:Day {date: $day_key})-[:HAS_SHIFT]->(s:Shift {name: $shift})
+        MATCH (s)-[c:DECK_COVERAGE]->(dk:Deck {name: deck})
+        MATCH (u:User {name: c.user_name})
+        RETURN u.slack_id AS slack_id
+    ")
+    .param("prefix", prefix)
+    .param("day_key", day_key)
+    .param("shift", shift);
+
+    match graph.execute(q).await {
+        Ok(mut result) => {
+            if let Ok(Some(row)) = result.next().await {
+                let slack_id: String = row.get("slack_id").unwrap_or_default();
+                Ok(Json(slack_id))
+            } else {
+                Err(Json("Not found"))
+            }
+        }
+        Err(e) => {
+            eprintln!("get_deck_assignee_slack error: {e}");
+            Err(Json("Query failed"))
         }
     }
 }

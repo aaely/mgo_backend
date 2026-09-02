@@ -1,18 +1,22 @@
-# Build context for this Dockerfile must be the PARENT directory containing
-# both `mgo_backend` and `lms_react` as sibling checkouts, e.g.:
-#   docker build -f mgo_backend/Dockerfile -t mgo-backend:test .
-# (run from the directory that contains both repos, not from mgo_backend/ itself)
+# Build context is this repo (mgo_backend) itself — lms_react is pulled
+# straight from GitHub during the build instead of being COPYd from a local
+# sibling checkout, so this works from a plain Git-source OpenShift
+# BuildConfig (which can only clone one repo) as well as a local build:
+#   docker build -f Dockerfile -t mgo-backend:test .
+# (run from inside mgo_backend/)
 
 # ── Stage 1: Build frontend ──
 FROM node:22-slim AS frontend-builder
 
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /frontend
 
-# Cache npm install before copying full source
-COPY lms_react/package.json lms_react/package-lock.json ./
+# Pin to a specific branch/tag here once lms_react has stable releases —
+# right now this always builds whatever's currently on main.
+RUN git clone --depth=1 https://github.com/aaely/lms_react.git .
 RUN npm ci
-
-COPY lms_react ./
 RUN npm run build
 
 # ── Stage 2: Build Rust binary ──
@@ -23,12 +27,12 @@ RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/li
 WORKDIR /app
 
 # Cache dependencies before copying source
-COPY mgo_backend/Cargo.toml mgo_backend/Cargo.lock ./
+COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo 'fn main() {}' > src/main.rs
 RUN cargo build --release
 RUN rm -f target/release/deps/rocket_http*
 
-COPY mgo_backend/src ./src
+COPY src ./src
 RUN cargo build --release
 
 # ── Stage 3: Runtime ──
@@ -39,15 +43,15 @@ RUN apt-get update && apt-get install -y libssl3 ca-certificates && rm -rf /var/
 # If your AD domain controller's cert (for LDAP_URL=ldaps://...) is signed by
 # an internal/private CA rather than a public one, this container won't trust
 # it — only the standard public CA bundle is installed above. Once you have
-# the CA's .crt file from GM IT, drop it at mgo_backend/certs/<name>.crt and
-# uncomment the two lines below.
-# COPY mgo_backend/certs/*.crt /usr/local/share/ca-certificates/
-# RUN update-ca-certificates
+# the CA's .crt file from GM IT, drop it at certs/<name>.crt and uncomment
+# the two lines below.
+COPY certs/*.crt /usr/local/share/ca-certificates/
+RUN update-ca-certificates
 
 WORKDIR /app
 
 COPY --from=builder /app/target/release/rocket_http .
-COPY mgo_backend/docker-entrypoint.sh .
+COPY docker-entrypoint.sh .
 RUN chmod +x docker-entrypoint.sh
 COPY --from=frontend-builder /frontend/dist ./dist
 

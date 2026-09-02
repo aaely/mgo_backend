@@ -324,6 +324,7 @@ pub struct UnassignShiftRequest {
 pub struct DeckCoverage {
     pub deck:      String,
     pub user_name: Option<String>,
+    pub slack_id:  Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -2580,3 +2580,91 @@ pub async fn close_hot_part(
 
     Ok(Json("Hot part resolved"))
 }
+
+#[derive(serde::Deserialize)]
+pub struct SlackPayload {
+    pub text: String,
+}
+
+#[post("/api/send_slack", data = "<payload>")]
+pub async fn send_slack(
+    payload: Json<SlackPayload>,
+    _user:   AuthenticatedUser,
+) -> Result<Json<&'static str>, Json<&'static str>> {
+    let webhook_url = std::env::var("SLACK_WEBHOOK_URL")
+        .map_err(|_| Json("SLACK_WEBHOOK_URL not configured"))?;
+
+    let client = reqwest::Client::new();
+    client
+        .post(&webhook_url)
+        .json(&serde_json::json!({ "text": payload.text }))
+        .send()
+        .await
+        .map_err(|_| Json("Slack request failed"))?;
+
+    Ok(Json("ok"))
+}
+
+#[derive(serde::Deserialize)]
+pub struct RescheduledTrailer {
+    pub lms_accent:         String,
+    pub route_id:           String,
+    pub scac:               String,
+    pub trailer1:           String,
+    pub dock_code:          String,
+    pub schedule_start_date: String,
+    pub adjusted_start_time: String,
+    pub lowest_doh:         String,
+}
+
+#[post("/api/send_rescheduled_slack", data = "<trailers>")]
+pub async fn send_rescheduled_slack(
+    trailers: Json<Vec<RescheduledTrailer>>,
+    state:    &State<AppState>,
+    _user:    AuthenticatedUser,
+) -> Result<Json<&'static str>, Json<&'static str>> {
+    let webhook_url = std::env::var("SLACK_WEBHOOK_URL")
+        .map_err(|_| Json("SLACK_WEBHOOK_URL not configured"))?;
+
+    let graph = &state.graph;
+
+    let mut lines: Vec<String> = Vec::new();
+    for (i, trl) in trailers.iter().enumerate() {
+        let prefix = trl.route_id.to_lowercase().chars().take(6).collect::<String>();
+        let deck = {
+            let q = neo4rs::query("
+                MATCH (r:PartRoute) WHERE toLower(r.route) STARTS WITH $prefix
+                MATCH (p:PartASL {part: r.part})
+                RETURN p.deck AS deck LIMIT 1
+            ").param("prefix", prefix);
+            match graph.execute(q).await {
+                Ok(mut res) => {
+                    if let Ok(Some(row)) = res.next().await {
+                        row.get::<String>("deck").unwrap_or_default()
+                    } else { String::new() }
+                }
+                Err(_) => String::new(),
+            }
+        };
+
+        let deck_str = if deck.is_empty() { String::new() } else { format!(" | Deck: {}", deck) };
+        lines.push(format!(
+            "{}. Load: {} | Route: {} | SCAC: {} | Trailer: {} | Dock: {}{} | Date: {} | Time: {} | DoH: {}",
+            i + 1,
+            trl.lms_accent, trl.route_id, trl.scac, trl.trailer1, trl.dock_code, deck_str,
+            trl.schedule_start_date, trl.adjusted_start_time, trl.lowest_doh,
+        ));
+    }
+
+    let text = format!("*Rescheduled Trailers ({})*\n{}", trailers.len(), lines.join("\n"));
+
+    let client = reqwest::Client::new();
+    client
+        .post(&webhook_url)
+        .json(&serde_json::json!({ "text": text }))
+        .send()
+        .await
+        .map_err(|_| Json("Slack request failed"))?;
+
+    Ok(Json("ok"))
+}
