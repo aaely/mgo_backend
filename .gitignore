@@ -1,6 +1,7 @@
 # Ignore the target directory
 /target/
-
+/k8s
+/certs
 # Ignore the Cargo lock file (for libraries)
 Cargo.lock
 
