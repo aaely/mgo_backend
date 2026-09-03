@@ -2020,7 +2020,8 @@ pub async fn upload_part_asn(
                 dock:          $dock,
                 eda:           $eda,
                 eta:           $eta,
-                mode:          $mode
+                mode:          $mode,
+                country:       $country
             })
         ")
         .param("scac",          asn.scac.clone())
@@ -2038,6 +2039,7 @@ pub async fn upload_part_asn(
         .param("mode",          asn.mode.clone())
         .param("eda",           asn.eda.clone())
         .param("eta",           asn.eta.clone())
+        .param("country",       asn.country.clone())
         .param("mode",          asn.mode.clone());
 
         graph.run(q).await.map_err(|e| {
@@ -2124,6 +2126,7 @@ pub async fn upload_part_route(
 
     for pr in data.iter() {
         let q = query("
+            MATCH (p:PartASN {part: $part})
             CREATE (n:PartRoute {
                 part:    $part,
                 duns:    $duns,
@@ -2131,7 +2134,7 @@ pub async fn upload_part_route(
                 desc:    $desc,
                 deck:    $deck,
                 dock:    $dock,
-                country: $country
+                country: p.country
             })
         ")
         .param("part",    pr.part.clone())
@@ -2139,9 +2142,8 @@ pub async fn upload_part_route(
         .param("route",   pr.route.clone())
         .param("desc",    pr.desc.clone())
         .param("deck",    pr.deck.clone())
-        .param("dock",    pr.dock.clone())
-        .param("country", pr.country.clone());
-
+        .param("dock",    pr.dock.clone());
+    
         graph.run(q).await.map_err(|e| {
             eprintln!("Failed to upload PartRoute: {:?}", e);
             Json("Failed to upload PartRoute")

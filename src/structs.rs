@@ -388,6 +388,7 @@ pub struct PartASN {
     pub eda:          String,
     pub eta:          String,
     pub mode:         String,
+    pub country:      String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]

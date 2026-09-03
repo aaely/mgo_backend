@@ -16,9 +16,9 @@ impl std::fmt::Display for LdapAuthError {
             LdapAuthError::Config(e)          => write!(f, "LDAP misconfigured: {e}"),
             LdapAuthError::Connection(e)      => write!(f, "LDAP connection error: {e}"),
             LdapAuthError::Bind(e)            => write!(f, "LDAP error: {e}"),
-            LdapAuthError::UserNotFound       => write!(f, "User not found"),
-            LdapAuthError::InvalidCredentials => write!(f, "Invalid credentials"),
-            LdapAuthError::NoRoleAssigned     => write!(f, "User is not a member of any authorized group"),
+            LdapAuthError::UserNotFound                   => write!(f, "User not found"),
+            LdapAuthError::InvalidCredentials             => write!(f, "Invalid credentials"),
+            LdapAuthError::NoRoleAssigned                 => write!(f, "User is not a member of any authorized group"),
         }
     }
 }

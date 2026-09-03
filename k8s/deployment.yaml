@@ -4,7 +4,9 @@ metadata:
   name: mgo-backend
   namespace: 7372268-test
 spec:
-  replicas: 2
+  replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: mgo-backend
@@ -26,7 +28,6 @@ spec:
       # relies on — no runAsUser needed here.
       securityContext:
         runAsNonRoot: true
-        fsGroup: 0
       containers:
         - name: mgo-backend
           image: image-registry.openshift-image-registry.svc:5000/7372268-test/mgo-backend:latest
@@ -35,6 +36,13 @@ spec:
             capabilities:
               drop: ["ALL"]
             readOnlyRootFilesystem: false   # rocket writes nothing to /; flip to true if needed
+          resources:
+            requests:
+              cpu: "1"
+              memory: "4Gi"
+            limits:
+              cpu: "2"
+              memory: "6Gi"
           ports:
             - containerPort: 8000   # HTTP
             - containerPort: 9001   # WS (plain)

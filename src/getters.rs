@@ -1313,6 +1313,7 @@ pub async fn get_scan_asn(
                 dock:         node.get("dock").unwrap_or_default(),
                 eda:          node.get("eda").unwrap_or_default(),
                 eta:          node.get("eta").unwrap_or_default(),
+                country:      node.get("country").unwrap_or_default(),
             });
         }
     }
@@ -1359,6 +1360,7 @@ pub async fn get_scan_asn_deck(
                 dock:         node.get("dock").unwrap_or_default(),
                 eda:          node.get("eda").unwrap_or_default(),
                 eta:          node.get("eta").unwrap_or_default(),
+                country:      node.get("country").unwrap_or_default(),
             });
         }
     }
@@ -1447,6 +1449,7 @@ pub async fn get_edock_asn(state: &State<AppState>) -> Json<Vec<PartASN>> {
                 eta:          node.get("eta").unwrap_or_default(),
                 quantity:     Some(node.get::<f64>("quantity").unwrap_or_default()),
                 status:       Some(node.get::<i64>("status").unwrap_or_default() as u32),
+                country:      node.get("country").unwrap_or_default(),
             });
         }
     }
@@ -1489,6 +1492,7 @@ pub async fn get_part_asn(state: &State<AppState>) -> Json<Vec<PartASN>> {
                 eta:          node.get("eta").unwrap_or_default(),
                 quantity:     Some(node.get::<f64>("quantity").unwrap_or_default()),
                 status:       Some(node.get::<i64>("status").unwrap_or_default() as u32),
+                country:      node.get("country").unwrap_or_default(),
             });
         }
     }
