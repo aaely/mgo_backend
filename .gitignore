@@ -1,12 +1,13 @@
 # Ignore the target directory
 /target/
-
+/certs
 # Ignore the Cargo lock file (for libraries)
 Cargo.lock
 
 # Ignore the .env file (if you have one)
 .claude
 .netlify
+.env
 # Ignore build artifacts and other unnecessary files
 **/*.rs.bk
 **/*.rs~ 
