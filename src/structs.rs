@@ -260,6 +260,18 @@ pub struct ShiftSlot {
     pub assigned: Vec<ShiftAssignment>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RescheduledTrailer {
+    pub lms_accent:         String,
+    pub route_id:           String,
+    pub scac:               String,
+    pub trailer1:           String,
+    pub dock_code:          String,
+    pub schedule_start_date: String,
+    pub adjusted_start_time: String,
+    pub lowest_doh:         String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UpdatePositionRequest {
     pub user_name: String,
@@ -388,6 +400,7 @@ pub struct PartASN {
     pub eda:          String,
     pub eta:          String,
     pub mode:         String,
+    pub country:      String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]

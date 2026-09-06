@@ -42,11 +42,15 @@ RUN apt-get update && apt-get install -y libssl3 ca-certificates && rm -rf /var/
 
 # If your AD domain controller's cert (for LDAP_URL=ldaps://...) is signed by
 # an internal/private CA rather than a public one, this container won't trust
-# it — only the standard public CA bundle is installed above. Once you have
-# the CA's .crt file from GM IT, drop it at certs/<name>.crt and uncomment
-# the two lines below.
-COPY certs/*.crt /usr/local/share/ca-certificates/
-RUN update-ca-certificates
+# it — only the standard public CA bundle is installed above. The actual cert
+# comes from an OpenShift Secret mounted at runtime (see k8s/deployment.yaml's
+# ca-certs volume), not baked in here — so update-ca-certificates has to run
+# at container start (docker-entrypoint.sh) instead of at build time, once
+# the Secret's contents actually exist on disk. Just need these paths
+# writable by whatever arbitrary UID OpenShift assigns at runtime.
+RUN mkdir -p /usr/local/share/ca-certificates/custom \
+ && chown -R 1001:0 /usr/local/share/ca-certificates /etc/ssl/certs \
+ && chmod -R g=u /usr/local/share/ca-certificates /etc/ssl/certs
 
 WORKDIR /app
 

@@ -45,6 +45,13 @@ spec:
                 name: mgo-backend-config
             - secretRef:
                 name: mgo-backend-secret
+          volumeMounts:
+            # Internal CA cert(s) for trusting LDAP_URL=ldaps://... — only
+            # needed if your AD domain controller's cert isn't from a public
+            # CA. See k8s/README notes for how mgo-backend-ca-certs gets created.
+            - name: ca-certs
+              mountPath: /usr/local/share/ca-certificates/custom
+              readOnly: true
           # TLS cert volume — only needed when USE_HTTPS=true
           # volumeMounts:
           #   - name: tls-certs
@@ -65,6 +72,11 @@ spec:
               port: 8000
             initialDelaySeconds: 15
             periodSeconds: 30
+      volumes:
+        - name: ca-certs
+          secret:
+            secretName: mgo-backend-ca-certs
+            optional: true   # pod still starts fine if you haven't created this yet
       # volumes:
       #   - name: tls-certs
       #     secret:
