@@ -432,8 +432,9 @@ pub async fn part_monitoring_service(
                     .map(|arrival| (current_downtime_dt - arrival).num_minutes() as f64 / 60.0);
                 let hours_until_rescue = rescue_margin.unwrap_or(0.0);
 
-                // Alert if the eventual outage is close OR the ASN saving from
-                // the *current* outage only cleared it by a thin margin.
+                // Only alert if the part is actually at risk: the eventual outage
+                // is close (<=6h) OR the ASN saving from the current outage only
+                // cleared it by a thin margin (<=6h). Drop entirely otherwise.
                 let level = worse_level(classify(final_hours_to_out), rescue_margin.and_then(classify));
 
                 if let Some(level) = level {
@@ -495,20 +496,14 @@ pub async fn part_monitoring_service(
                         break;
                     }
                     Some(idx) => {
-                        // Margin this ASN gave before the outage it just saved the part from —
-                        // must be measured against the *previous* downtime, not the next one.
-                        let prev_downtime_dt = current_downtime_dt;
-                        let hours_until_rescue =
-                            (prev_downtime_dt - arrival_dt).num_minutes() as f64 / 60.0;
-
                         current_downtime_dt = window_start + chrono::Duration::hours(idx as i64);
                         final_hours_to_out = idx as f64 - current_hour_offset as f64;
 
-                        // Alert if the next projected outage is close OR this save cleared
-                        // the previous outage by only a thin margin.
-                        let level = worse_level(classify(final_hours_to_out), classify(hours_until_rescue));
-
-                        if let Some(level) = level {
+                        // Only alert if this ASN's rescue *didn't* push the outage out
+                        // far enough — if final_hours_to_out clears 6h, drop it entirely
+                        // rather than flagging a follow-up trailer that isn't actually
+                        // time-critical.
+                        if let Some(level) = classify(final_hours_to_out) {
                             let (next_eda, next_eta, next_trailer) = asns_for_part
                                 .get(asn_index)
                                 .map(|(eda, eta, trailer, _)| (eda.clone(), eta.clone(), trailer.clone()))
@@ -519,7 +514,8 @@ pub async fn part_monitoring_service(
                             dispatch_alert(
                                 AlertParams { part, asl, level,
                                     hours_to_out: final_hours_to_out,
-                                    next_asn_display, next_trailer, hours_until_rescue },
+                                    next_asn_display, next_trailer,
+                                    hours_until_rescue: final_hours_to_out },
                                 now, &alerted_parts, &mut alerts,
                             ).await;
                         }
