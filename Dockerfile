@@ -16,6 +16,7 @@ WORKDIR /frontend
 # Pin to a specific branch/tag here once lms_react has stable releases —
 # right now this always builds whatever's currently on main.
 RUN git clone --depth=1 https://github.com/aaely/lms_react.git .
+COPY lms_react/.env.production .env.production
 RUN npm ci
 RUN npm run build
 

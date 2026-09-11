@@ -1,0 +1,19 @@
+# Exposes Neo4j Browser (the web console UI) externally. Gets you the login
+# page — but see the note below about Bolt before assuming a real connection
+# will work from outside the cluster.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: neo4j-browser
+  namespace: 7372268-test
+spec:
+  # host: neo4j.apps.your-cluster.com   # uncomment and set your hostname
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  to:
+    kind: Service
+    name: neo4j-service
+    weight: 100
