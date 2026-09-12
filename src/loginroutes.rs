@@ -39,11 +39,24 @@ pub async fn store_refresh_token(
     ).await
 }
 
+// Lets the auth cookies be shared across subdomains of the same cluster
+// (e.g. mgo-backend-<ns>.apps.<domain> and mgo-backend-ws-<ns>.apps.<domain>)
+// when we can't set an explicit Route host and are stuck with OpenShift's
+// auto-generated per-Route hostnames — those only share the .apps.<domain>
+// suffix, so the cookie needs that as its domain to be sent on both.
+// Leave COOKIE_DOMAIN unset locally / anywhere a single hostname is fine.
+fn cookie_domain() -> Option<String> {
+    std::env::var("COOKIE_DOMAIN").ok().filter(|d| !d.is_empty())
+}
+
 fn make_cookie(name: &'static str, value: String) -> Cookie<'static> {
     let mut c = Cookie::new(name, value);
     c.set_http_only(true);
     c.set_same_site(SameSite::Lax);
     c.set_path("/");
+    if let Some(domain) = cookie_domain() {
+        c.set_domain(domain);
+    }
     c
 }
 
@@ -168,10 +181,16 @@ pub async fn logout(
 
     let mut ac = Cookie::new("f126f1b7d90a5bd5", "");
     ac.set_path("/");
+    if let Some(domain) = cookie_domain() {
+        ac.set_domain(domain);
+    }
     jar.remove(ac);
 
     let mut rc = Cookie::new("738fadeef720a679", "");
     rc.set_path("/");
+    if let Some(domain) = cookie_domain() {
+        rc.set_domain(domain);
+    }
     jar.remove(rc);
 
     Ok(Json("Logged out"))

@@ -1,6 +1,7 @@
 use crate::structs::*;
 use crate::helpers::{send_email, send_sms, parse_asn_arrival};
 use neo4rs::{query, Node, Graph};
+use chrono::Datelike;
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
 use std::collections::HashMap;
@@ -354,6 +355,15 @@ pub async fn part_monitoring_service(
         let window_start = if now_naive >= today_2200 { today_2200 } else { yesterday_2200 };
         let current_hour_offset = (now_naive - window_start).num_hours().clamp(0, 47) as usize;
 
+        // day2 (hourly[24..48]) runs from window_start+24h to window_start+48h,
+        // which — since window_start always sits at 22:00 — means day2 always
+        // starts at 22:00 on the next calendar day. If that day is a Saturday,
+        // day2 is exactly the Sat 22:00 -> Sun 22:00 shutdown window: the plant
+        // doesn't run then, so zero those slots out rather than let them count
+        // toward an outage.
+        let day2_start = window_start + chrono::Duration::hours(24);
+        let day2_is_weekend_shutdown = day2_start.weekday() == chrono::Weekday::Sat;
+
         let mut alerts: Vec<PartAlert> = Vec::new();
 
         for (part, asl) in &asl_map {
@@ -362,7 +372,7 @@ pub async fn part_monitoring_service(
                 None => continue,
             };
 
-            let hourly = vec![
+            let mut hourly = vec![
                 out.day1_hr1,  out.day1_hr2,  out.day1_hr3,  out.day1_hr4,
                 out.day1_hr5,  out.day1_hr6,  out.day1_hr7,  out.day1_hr8,
                 out.day1_hr9,  out.day1_hr10, out.day1_hr11, out.day1_hr12,
@@ -376,6 +386,12 @@ pub async fn part_monitoring_service(
                 out.day2_hr17, out.day2_hr18, out.day2_hr19, out.day2_hr20,
                 out.day2_hr21, out.day2_hr22, out.day2_hr23, out.day2_hr24,
             ];
+
+            if day2_is_weekend_shutdown {
+                for slot in &mut hourly[24..48] {
+                    *slot = 0.0;
+                }
+            }
 
             let asns_for_part = asn_map.get(part).cloned().unwrap_or_default();
 

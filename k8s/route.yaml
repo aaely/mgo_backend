@@ -1,6 +1,7 @@
 # OpenShift Routes — the Router (HAProxy) terminates TLS and forwards plain HTTP/WS to the pod.
-# The hostname is auto-generated as <name>-<namespace>.apps.<cluster-domain> if omitted.
-# Set an explicit host once you know your cluster's .apps domain.
+# Both routes share the same hostname; the WS route claims path /ws so the browser
+# sends the auth cookie (which is scoped to the hostname, not a subdomain) on the
+# WebSocket upgrade without any extra cookie-domain configuration.
 
 # ── App traffic (HTTP → HTTPS, edge TLS termination) ──────────────────────────
 apiVersion: route.openshift.io/v1
@@ -9,7 +10,7 @@ metadata:
   name: mgo-backend
   namespace: 7372268-test
 spec:
-  # host: mgo.apps.your-cluster.com   # uncomment and set your hostname
+  host: mgo-backend-7372268-test.apps.rtpfs-wpp2.wpp.nam.gm.com
   port:
     targetPort: http
   tls:
@@ -23,7 +24,9 @@ spec:
 ---
 
 # ── WebSocket traffic (WS → WSS, edge TLS termination) ────────────────────────
-# Large timeout so long-lived WS connections aren't dropped by the Router.
+# Same hostname as the HTTP route so auth cookies are included on the WS handshake.
+# Path /ws routes to the WS service; HAProxy strips nothing by default, but
+# tokio-tungstenite accepts any path so no backend change is needed.
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
@@ -32,12 +35,13 @@ metadata:
   annotations:
     haproxy.router.openshift.io/timeout: 24h
 spec:
-  # host: mgo-ws.apps.your-cluster.com   # uncomment and set your hostname
+  host: mgo-backend-7372268-test.apps.rtpfs-wpp2.wpp.nam.gm.com
+  path: /ws
   port:
     targetPort: ws
   tls:
     termination: edge
-    # No insecureEdgeTerminationPolicy — plain ws:// is refused, wss:// only.
+    insecureEdgeTerminationPolicy: None
   to:
     kind: Service
     name: mgo-backend-service

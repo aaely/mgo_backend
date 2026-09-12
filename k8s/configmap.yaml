@@ -16,3 +16,9 @@ data:
   LDAP_GROUP_FLOATER: "CN=MODMS-Floaters,OU=Groups,DC=corp,DC=com"  # ← placeholder, set real DN
   LDAP_GROUP_MFU:      "CN=MODMS-MFU,OU=Groups,DC=corp,DC=com"      # ← placeholder, set real DN
   USE_HTTPS: "false"                                # "false" = OpenShift Router terminates TLS; "true" = pod-level TLS (passthrough Route)
+  # Shares the auth cookies across mgo-backend-<ns>.apps.<domain> and
+  # mgo-backend-ws-<ns>.apps.<domain> — needed since we can't set an explicit
+  # Route host and both auto-generated hostnames only share this suffix.
+  # Must start with a leading dot. Leave unset if you ever do get a single
+  # shared hostname for both Routes.
+  COOKIE_DOMAIN: ".apps.your-cluster.com"           # ← placeholder, set your real .apps domain
