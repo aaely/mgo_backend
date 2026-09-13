@@ -1812,7 +1812,7 @@ pub async fn assign_deck(
 
     let q = query("
         MATCH (s:Shift {day_date: $day_key, name: $shift})
-        MATCH (d:Deck {name: $deck})
+        MERGE (d:Deck {name: $deck})
         MERGE (s)-[c:DECK_COVERAGE]->(d)
         SET c.user_name = $user_name
     ")
@@ -2238,18 +2238,18 @@ pub async fn update_user(
 
     let q = query("
         MATCH (u:User {name: $name})
-        SET u.full_name = $full_name,
-            u.position  = $position,
-            u.role      = $role,
-            u.shift     = $shift,
-            u.slack_id  = $slack_id
+        SET u.first_name = $first_name,
+            u.position   = $position,
+            u.role       = $role,
+            u.shift      = $shift,
+            u.slack_id   = $slack_id
     ")
-    .param("name",      req.name.clone())
-    .param("full_name", req.full_name.clone())
-    .param("position",  req.position.clone())
-    .param("role",      req.role.clone())
-    .param("shift",     req.shift.clone())
-    .param("slack_id",  req.slack_id.clone());
+    .param("name",       req.name.clone())
+    .param("first_name", req.first_name.clone())
+    .param("position",   req.position.clone())
+    .param("role",       req.role.clone())
+    .param("shift",      req.shift.clone())
+    .param("slack_id",   req.slack_id.clone());
 
     graph.run(q).await.map_err(|e| {
         eprintln!("Failed to update user: {:?}", e);

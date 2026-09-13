@@ -1055,13 +1055,13 @@ pub async fn get_users_admin(
     if role.0.contains("vaa") || role.0.contains("univ") {
         return Err(Json("Forbidden"));
     }
-    if !role.0.contains("manager") {
+    if !matches!(role.0.as_str(), "admin" | "manager") {
         return Err(Json("Forbidden"));
     }
 
     let graph = &state.graph;
 
-    let q = query("MATCH (u:User) RETURN u ORDER BY u.full_name");
+    let q = query("MATCH (u:User) RETURN u ORDER BY u.first_name");
 
     match graph.execute(q).await {
         Ok(mut result) => {
@@ -1069,12 +1069,12 @@ pub async fn get_users_admin(
             while let Ok(Some(row)) = result.next().await {
                 let node: Node = row.get("u").map_err(|_| Json("Failed to get user node"))?;
                 users.push(UpdateUserRequest {
-                    name:      node.get("name").unwrap_or_default(),
-                    full_name: node.get("full_name").unwrap_or_default(),
-                    position:  node.get("position").unwrap_or_default(),
-                    role:      node.get("role").unwrap_or_default(),
-                    shift:     node.get("shift").unwrap_or_default(),
-                    slack_id:  node.get("slack_id").unwrap_or_default(),
+                    name:       node.get("name").unwrap_or_default(),
+                    first_name: node.get("first_name").unwrap_or_default(),
+                    position:   node.get("position").unwrap_or_default(),
+                    role:       node.get("role").unwrap_or_default(),
+                    shift:      node.get("shift").unwrap_or_default(),
+                    slack_id:   node.get("slack_id").unwrap_or_default(),
                 });
             }
             Ok(Json(users))

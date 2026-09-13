@@ -81,7 +81,7 @@ pub async fn login(
     graph.run(
         query("
             MERGE (u:User {name: $username})
-            ON CREATE SET u.full_name = '', u.position = '', u.shift = '', u.slack_id = ''
+            ON CREATE SET u.first_name = '', u.position = '', u.shift = '', u.slack_id = ''
             SET u.role = $role
         ")
         .param("username", username.clone())

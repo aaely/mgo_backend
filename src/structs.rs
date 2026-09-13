@@ -566,12 +566,12 @@ pub struct DockCountResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateUserRequest {
-    pub name:      String,
-    pub full_name: String,
-    pub position:  String,
-    pub role:      String,
-    pub shift:     String,
-    pub slack_id:  String,
+    pub name:       String,
+    pub first_name: String,
+    pub position:   String,
+    pub role:       String,
+    pub shift:      String,
+    pub slack_id:   String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
