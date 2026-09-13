@@ -1120,10 +1120,10 @@ pub async fn get_deck_assignee_slack(
     state:  &State<AppState>,
     _user:  AuthenticatedUser,
 ) -> Result<Json<String>, Json<&'static str>> {
-    use chrono::{Local, Timelike};
+    use chrono::Timelike;
     let graph  = &state.graph;
     let prefix = route.to_lowercase();
-    let now    = Local::now();
+    let now    = crate::helpers::now_central();
     let h      = now.hour();
     let shift  = if h >= 6 && h < 14 { "1st" } else if h >= 14 && h < 22 { "2nd" } else { "3rd" };
     let date   = now.format("%Y-%m-%d").to_string();

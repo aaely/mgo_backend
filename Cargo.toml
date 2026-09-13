@@ -17,6 +17,7 @@ lettre = { version = "0.11", features = ["tokio1", "tokio1-native-tls"] }
 jsonwebtoken = "8.1"
 ldap3 = { version = "0.11", features = ["tokio-native-tls"] }
 chrono = "0.4"
+chrono-tz = "0.8"
 tokio-tungstenite = "0.15"
 tungstenite = "0.16"
 futures-util = "0.3"

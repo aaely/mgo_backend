@@ -2127,15 +2127,12 @@ pub async fn upload_part_route(
     for pr in data.iter() {
         let q = query("
             OPTIONAL MATCH (p:PartASN {part: $part})
-            CREATE (n:PartRoute {
-                part:    $part,
-                duns:    $duns,
-                route:   $route,
-                desc:    $desc,
-                deck:    $deck,
-                dock:    $dock,
-                country: p.country
-            })
+            MERGE (n:PartRoute {part: $part, duns: $duns})
+            SET n.route   = $route,
+                n.desc    = $desc,
+                n.deck    = $deck,
+                n.dock    = $dock,
+                n.country = p.country
         ")
         .param("part",    pr.part.clone())
         .param("duns",    pr.duns.clone())
@@ -2437,7 +2434,7 @@ pub async fn create_hot_part(
     user: AuthenticatedUser,
 ) -> Result<Json<HotPart>, Json<&'static str>> {
     let graph = &state.graph;
-    let updated_at = chrono::Utc::now().format("%Y-%m-%d %H:%M").to_string();
+    let updated_at = crate::helpers::now_central().format("%Y-%m-%d %H:%M").to_string();
     let asn_json = serde_json::to_string(&req.asn_list).unwrap_or_else(|_| "[]".to_string());
 
     let q = query("
@@ -2528,7 +2525,7 @@ pub async fn close_hot_part(
     user: AuthenticatedUser,
 ) -> Result<Json<&'static str>, Json<&'static str>> {
     let graph = &state.graph;
-    let resolved_at = chrono::Utc::now().format("%Y-%m-%d %H:%M").to_string();
+    let resolved_at = crate::helpers::now_central().format("%Y-%m-%d %H:%M").to_string();
 
     let q = query("
         MATCH (h:ActiveHotPart {part: $part})

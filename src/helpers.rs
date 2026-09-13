@@ -3,6 +3,15 @@ use chrono::{DateTime, Duration, NaiveDate, Utc, Timelike, Datelike};
 use neo4rs::query;
 use crate::structs::{TrailerRecord, get_allowed_fields};
 
+// The OpenShift cluster this runs on isn't necessarily in US Central time,
+// but the business logic (shift windows, the 22:00 day boundary, weekend
+// shutdown detection) all assumes wall-clock Central time. DateTime<Utc>
+// converted via with_timezone handles CST/CDT DST transitions correctly,
+// unlike a fixed offset.
+pub fn now_central() -> DateTime<chrono_tz::Tz> {
+    Utc::now().with_timezone(&chrono_tz::US::Central)
+}
+
 pub fn get_shift(hour: u32) -> &'static str {
     match hour {
         6..=13  => "1st",

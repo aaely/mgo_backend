@@ -13,7 +13,7 @@ pub async fn late_trailer_service(graph: Arc<Graph>, ws_list: WebSocketList) {
     loop {
         interval.tick().await;
         println!("Running late trailer service...");
-        let now = chrono::Local::now();
+        let now = crate::helpers::now_central();
         let fifteen_mins_ago = now - chrono::Duration::minutes(15);
 
         let q = query("
@@ -131,8 +131,8 @@ struct AlertParams<'a> {
 
 async fn dispatch_alert(
     p: AlertParams<'_>,
-    now: chrono::DateTime<chrono::Local>,
-    alerted_parts: &Arc<Mutex<HashMap<String, chrono::DateTime<chrono::Local>>>>,
+    now: chrono::DateTime<chrono_tz::Tz>,
+    alerted_parts: &Arc<Mutex<HashMap<String, chrono::DateTime<chrono_tz::Tz>>>>,
     alerts: &mut Vec<PartAlert>,
 ) {
     let sms_eligible = matches!(p.level, "Emerging Issue" | "Shut Down");
@@ -195,7 +195,7 @@ async fn dispatch_alert(
 pub async fn part_monitoring_service(
     graph: Arc<Graph>,
     ws_list: WebSocketList,
-    alerted_parts: Arc<Mutex<HashMap<String, chrono::DateTime<chrono::Local>>>>,
+    alerted_parts: Arc<Mutex<HashMap<String, chrono::DateTime<chrono_tz::Tz>>>>,
     current_alerts: Arc<Mutex<Vec<PartAlert>>>,
 ) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60 * 15));
@@ -346,7 +346,7 @@ pub async fn part_monitoring_service(
             });
         }
 
-        let now = chrono::Local::now();
+        let now = crate::helpers::now_central();
         let now_naive = now.naive_local();
         let today_2200 = now_naive.date().and_hms_opt(22, 0, 0).unwrap();
         let yesterday_2200 = (now_naive.date() - chrono::Duration::days(1))
