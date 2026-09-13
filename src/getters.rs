@@ -965,14 +965,15 @@ pub async fn get_decks(
 
     let graph = &state.graph;
 
-    let q = query("MATCH (d:Deck) RETURN d.name AS name ORDER BY d.name");
+    let q = query("MATCH (p:PartASL) RETURN DISTINCT p.deck AS deck ORDER BY deck");
 
     match graph.execute(q).await {
         Ok(mut result) => {
             let mut decks = Vec::new();
             while let Ok(Some(row)) = result.next().await {
-                let name: String = row.get("name").unwrap_or_default();
-                decks.push(name);
+                if let Ok(deck) = row.get::<String>("deck") {
+                    decks.push(deck);
+                }
             }
             Ok(Json(decks))
         }
