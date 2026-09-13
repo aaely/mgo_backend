@@ -180,7 +180,6 @@ pub fn get_requested_fields(trailer: &TrailerRecord) -> Vec<&'static str> {
     if !trailer.statusOX.is_empty()          { fields.push("statusOX") }
     if !trailer.ryderComments.is_empty()     { fields.push("ryderComments") }
     if trailer.gmComments.is_some()          { fields.push("gmComments") }
-    if trailer.lateComments.is_some()        { fields.push("lateComments") }
     fields
 }
 
@@ -203,7 +202,6 @@ pub fn build_update_query(role: &str, trailer: &TrailerRecord) -> neo4rs::Query 
     if is_admin || allowed.contains(&"statusOX")          { sets.push("t.statusOX = $statusOX") }
     if is_admin || allowed.contains(&"ryderComments")     { sets.push("t.ryderComments = $ryderComments") }
     if is_admin || allowed.contains(&"gmComments")        { sets.push("t.gmComments = $gmComments") }
-    if is_admin || allowed.contains(&"lateComments")      { sets.push("t.lateComments = $lateComments") }
     if is_admin || allowed.contains(&"door")              { sets.push("t.door = $door") }
     if is_admin || allowed.contains(&"doorArrivalTime")   { sets.push("t.doorArrivalTime = $doorArrivalTime") }
 
@@ -228,7 +226,6 @@ pub fn build_update_query(role: &str, trailer: &TrailerRecord) -> neo4rs::Query 
         .param("statusOX",          trailer.statusOX.clone())
         .param("ryderComments",     trailer.ryderComments.clone())
         .param("gmComments",        trailer.gmComments.clone().unwrap_or_default())
-        .param("lateComments",      trailer.lateComments.clone().unwrap_or_default())
         .param("door",              trailer.door.clone())
         .param("doorArrivalTime",   trailer.doorArrivalTime.clone())
 }
@@ -238,7 +235,7 @@ pub fn get_event_type(field: &str) -> &'static str {
         "hour" | "dockCode" | "scac" | "trailer1" | "trailer2" |
         "adjustedStartTime" | "scheduleEndDate" | "scheduleEndTime" |
         "gateArrivalTime" | "actualStartTime" | "actualEndTime" |
-        "statusOX" | "ryderComments" | "gmComments" | "lateComments" |
+        "statusOX" | "ryderComments" | "gmComments" |
         "door" | "doorArrivalTime" | "LiveAdd" => "Trailer Updates",
         "shift_rolled"                          => "Shift Roll",
         "hot_part_created" | "hot_part_closed"  => "Hot Parts",

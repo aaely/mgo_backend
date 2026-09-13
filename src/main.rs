@@ -197,6 +197,7 @@ async fn main() {
             create_hot_part,
             close_hot_part,
             send_email_route,
+            notify_carrier_late,
             logout,
             get_audit_events,
             spa_fallback

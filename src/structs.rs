@@ -89,7 +89,6 @@ pub struct TrailerRecord {
     #[serde(default)] pub statusOX: String,
     #[serde(default)] pub loadComments: String,
     #[serde(default)] pub ryderComments: String,
-    pub lateComments: Option<String>,
     pub gmComments: Option<String>,
     pub lowestDoh: Option<String>,
     #[serde(default)] pub uuid: String,

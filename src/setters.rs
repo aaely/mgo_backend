@@ -794,7 +794,6 @@ pub async fn roll_next_shift(
             lowestDoh:          t.lowestDoh,
             loadComments:       t.loadComments,
             ryderComments:      t.ryderComments,
-            lateComments:       t.lateComments,
             gmComments:         t.gmComments,
             door:               t.door,
             doorArrivalTime:    t.doorArrivalTime
@@ -839,7 +838,6 @@ pub async fn roll_next_shift(
             lowestDoh:         t.lowestDoh,
             loadComments:      t.loadComments,
             ryderComments:     t.ryderComments,
-            lateComments:      t.lateComments,
             gmComments:        t.gmComments
         })
     ");
@@ -905,7 +903,6 @@ pub async fn roll_next_shift(
             lowestDoh:          s.lowestDoh,
             loadComments:       s.loadComments,
             ryderComments:      s.ryderComments,
-            lateComments:       s.lateComments,
             gmComments:         s.gmComments,
             door:               '',
             doorArrivalTime:    ''
@@ -1024,7 +1021,6 @@ pub async fn push_add_on (
             statusOX:          $statusOX,
             loadComments:      $loadComments,
             ryderComments:     $ryderComments,
-            lateComments:      $lateComments,
             gmComments:        $gmComments,
             lowestDoh:         $lowestDoh,
             door:              $door,
@@ -1057,7 +1053,6 @@ pub async fn push_add_on (
     .param("statusOX",          add_on.statusOX.clone())
     .param("loadComments",      add_on.loadComments.clone())
     .param("ryderComments",     add_on.ryderComments.clone())
-    .param("lateComments",      add_on.lateComments.clone().unwrap_or_default())
     .param("gmComments",        add_on.gmComments.clone().unwrap_or_default())
     .param("lowestDoh",         add_on.lowestDoh.clone().unwrap_or_default())
     .param("door",              add_on.door.clone())
@@ -1095,7 +1090,6 @@ pub async fn push_add_on (
                     statusOX:          node.get("statusOX").unwrap_or_default(),
                     loadComments:      node.get("loadComments").unwrap_or_default(),
                     ryderComments:     node.get("ryderComments").unwrap_or_default(),
-                    lateComments:      Some(node.get("lateComments").unwrap_or_default()),
                     gmComments:        Some(node.get("gmComments").unwrap_or_default()),
                     lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
                     editRef:           String::new(),
@@ -1288,7 +1282,6 @@ pub async fn upload_on_deck(
                     let statusOX:          String = trailer_node.get("statusOX").unwrap_or_default();
                     let loadComments:      String = trailer_node.get("loadComments").unwrap_or_default();
                     let ryderComments:     String = trailer_node.get("ryderComments").unwrap_or_default();
-                    let lateComments:      String = trailer_node.get("lateComments").unwrap_or_default();
                     let gmComments:        String = trailer_node.get("gmComments").unwrap_or_default();
                     let editRef:           String = trailer_node.get("editRef").unwrap_or_default();
 
@@ -1319,7 +1312,6 @@ pub async fn upload_on_deck(
                         statusOX,
                         loadComments,
                         ryderComments,
-                        lateComments: Some(lateComments),
                         gmComments: Some(gmComments),
                         lowestDoh: Some(lowestDoh),
                         editRef,
@@ -1346,7 +1338,6 @@ pub async fn upload_on_deck(
                         ("statusOX",          trailer.statusOX.clone()),
                         ("ryderComments",     trailer.ryderComments.clone()),
                         ("gmComments",        trailer.gmComments.clone().unwrap_or_default()),
-                        ("lateComments",      trailer.lateComments.clone().unwrap_or_default()),
                     ];
 
                     for (field, new_val) in &audit_pairs {
@@ -1504,7 +1495,6 @@ pub async fn update_live_trailer(
                     m.insert("statusOX",          n.get("statusOX").unwrap_or_default());
                     m.insert("ryderComments",     n.get("ryderComments").unwrap_or_default());
                     m.insert("gmComments",        n.get("gmComments").unwrap_or_default());
-                    m.insert("lateComments",      n.get("lateComments").unwrap_or_default());
                     m
                 } else {
                     HashMap::new()
@@ -1549,7 +1539,6 @@ pub async fn update_live_trailer(
                     statusOX:          node.get("statusOX").unwrap_or_default(),
                     loadComments:      node.get("loadComments").unwrap_or_default(),
                     ryderComments:     node.get("ryderComments").unwrap_or_default(),
-                    lateComments:      Some(node.get("lateComments").unwrap_or_default()),
                     gmComments:        Some(node.get("gmComments").unwrap_or_default()),
                     lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
                     editRef:           String::new(),
@@ -1592,7 +1581,6 @@ pub async fn update_live_trailer(
                     ("statusOX",          old_values.get("statusOX").cloned().unwrap_or_default(),          updated.statusOX.clone()),
                     ("ryderComments",     old_values.get("ryderComments").cloned().unwrap_or_default(),     updated.ryderComments.clone()),
                     ("gmComments",        old_values.get("gmComments").cloned().unwrap_or_default(),        updated.gmComments.clone().unwrap_or_default()),
-                    ("lateComments",      old_values.get("lateComments").cloned().unwrap_or_default(),      updated.lateComments.clone().unwrap_or_default()),
                 ];
 
                 for (field, old_val, new_val) in &audit_pairs {
@@ -2385,7 +2373,6 @@ pub async fn push_reschedules(
                 lowestDoh:         $lowestDoh,
                 loadComments:      $loadComments,
                 ryderComments:     $ryderComments,
-                lateComments:      $lateComments,
                 gmComments:        $gmComments
             })
         ")
@@ -2415,7 +2402,6 @@ pub async fn push_reschedules(
         .param("lowestDoh",         line.lowestDoh.clone())
         .param("loadComments",      line.loadComments.clone())
         .param("ryderComments",     line.ryderComments.clone())
-        .param("lateComments",      line.lateComments.clone().unwrap_or_default())
         .param("gmComments",        line.gmComments.clone().unwrap_or_default());
 
         graph.run(q).await.map_err(|e| {
