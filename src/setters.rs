@@ -253,12 +253,21 @@ pub async fn upload_lms(
     })?;
 
     // ── Link Carrier -> Route (traverse either direction without an arrow) ──
+    // Mexico routes run as two legs sharing everything but the last letter
+    // ('U' for the US leg, 'M' for the Mexico leg) — but parts are only ever
+    // tagged with the 'M' route. LMSRecord carries whichever leg's load this
+    // is, often 'U', so remap 'U' -> 'M' here or the carrier link ends up on
+    // a Route node the parts never reference.
     let carrier_route_query = query("
         MATCH (l:LMSRecord)
         WHERE l.scac     IS NOT NULL AND l.scac     <> ''
           AND l.route_id IS NOT NULL AND l.route_id <> ''
+        WITH l, CASE
+            WHEN l.route_id ENDS WITH 'U' THEN left(l.route_id, size(l.route_id) - 1) + 'M'
+            ELSE l.route_id
+        END AS effective_route
         MERGE (car:Carrier {scac: l.scac})
-        MERGE (r:Route {route: l.route_id})
+        MERGE (r:Route {route: effective_route})
         MERGE (car)-[:HAS_ROUTE]->(r)
     ");
     graph.run(carrier_route_query).await.map_err(|e| {
@@ -267,9 +276,14 @@ pub async fn upload_lms(
     })?;
 
     // ── Drop stale Carrier -> Route links no longer backed by an LMSRecord ──
+    // Same 'U' -> 'M' remap as above, so this doesn't immediately prune the
+    // links the query just created.
     let prune_query = query("
         MATCH (car:Carrier)-[rel:HAS_ROUTE]->(r:Route)
-        OPTIONAL MATCH (l:LMSRecord {scac: car.scac, route_id: r.route})
+        OPTIONAL MATCH (l:LMSRecord)
+        WHERE l.scac = car.scac
+          AND (l.route_id = r.route
+               OR (l.route_id ENDS WITH 'U' AND left(l.route_id, size(l.route_id) - 1) + 'M' = r.route))
         WITH rel, l
         WHERE l IS NULL
         DELETE rel
