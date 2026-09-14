@@ -1102,6 +1102,7 @@ pub async fn push_add_on (
                     actualStartTime:   node.get("actualStartTime").unwrap_or_default(),
                     actualEndTime:     node.get("actualEndTime").unwrap_or_default(),
                     statusOX:          node.get("statusOX").unwrap_or_default(),
+                    stat:              node.get("stat").unwrap_or_default(),
                     loadComments:      node.get("loadComments").unwrap_or_default(),
                     ryderComments:     node.get("ryderComments").unwrap_or_default(),
                     gmComments:        Some(node.get("gmComments").unwrap_or_default()),
@@ -1294,6 +1295,7 @@ pub async fn upload_on_deck(
                     let actualStartTime:   String = trailer_node.get("actualStartTime").unwrap_or_default();
                     let actualEndTime:     String = trailer_node.get("actualEndTime").unwrap_or_default();
                     let statusOX:          String = trailer_node.get("statusOX").unwrap_or_default();
+                    let stat:              String = trailer_node.get("stat").unwrap_or_default();
                     let loadComments:      String = trailer_node.get("loadComments").unwrap_or_default();
                     let ryderComments:     String = trailer_node.get("ryderComments").unwrap_or_default();
                     let gmComments:        String = trailer_node.get("gmComments").unwrap_or_default();
@@ -1324,6 +1326,7 @@ pub async fn upload_on_deck(
                         actualStartTime,
                         actualEndTime,
                         statusOX,
+                        stat,
                         loadComments,
                         ryderComments,
                         gmComments: Some(gmComments),
@@ -1507,6 +1510,7 @@ pub async fn update_live_trailer(
                     m.insert("actualStartTime",   n.get("actualStartTime").unwrap_or_default());
                     m.insert("actualEndTime",     n.get("actualEndTime").unwrap_or_default());
                     m.insert("statusOX",          n.get("statusOX").unwrap_or_default());
+                    m.insert("stat",              n.get("stat").unwrap_or_default());
                     m.insert("ryderComments",     n.get("ryderComments").unwrap_or_default());
                     m.insert("gmComments",        n.get("gmComments").unwrap_or_default());
                     m
@@ -1551,6 +1555,7 @@ pub async fn update_live_trailer(
                     actualStartTime:   node.get("actualStartTime").unwrap_or_default(),
                     actualEndTime:     node.get("actualEndTime").unwrap_or_default(),
                     statusOX:          node.get("statusOX").unwrap_or_default(),
+                    stat:              node.get("stat").unwrap_or_default(),
                     loadComments:      node.get("loadComments").unwrap_or_default(),
                     ryderComments:     node.get("ryderComments").unwrap_or_default(),
                     gmComments:        Some(node.get("gmComments").unwrap_or_default()),
@@ -1593,6 +1598,7 @@ pub async fn update_live_trailer(
                     ("actualStartTime",   old_values.get("actualStartTime").cloned().unwrap_or_default(),   updated.actualStartTime.clone()),
                     ("actualEndTime",     old_values.get("actualEndTime").cloned().unwrap_or_default(),     updated.actualEndTime.clone()),
                     ("statusOX",          old_values.get("statusOX").cloned().unwrap_or_default(),          updated.statusOX.clone()),
+                    ("stat",              old_values.get("stat").cloned().unwrap_or_default(),              updated.stat.clone()),
                     ("ryderComments",     old_values.get("ryderComments").cloned().unwrap_or_default(),     updated.ryderComments.clone()),
                     ("gmComments",        old_values.get("gmComments").cloned().unwrap_or_default(),        updated.gmComments.clone().unwrap_or_default()),
                 ];

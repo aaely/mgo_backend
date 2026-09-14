@@ -59,6 +59,7 @@ pub async fn late_trailer_service(graph: Arc<Graph>, ws_list: WebSocketList) {
                             actualStartTime:   node.get("actualStartTime").unwrap_or_default(),
                             actualEndTime:     node.get("actualEndTime").unwrap_or_default(),
                             statusOX:          node.get("statusOX").unwrap_or_default(),
+                            stat:              node.get("stat").unwrap_or_default(),
                             loadComments:      node.get("loadComments").unwrap_or_default(),
                             ryderComments:     node.get("ryderComments").unwrap_or_default(),
                             gmComments:        Some(node.get("gmComments").unwrap_or_default()),

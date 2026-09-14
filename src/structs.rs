@@ -87,6 +87,7 @@ pub struct TrailerRecord {
     #[serde(default)] pub actualStartTime: String,
     #[serde(default)] pub actualEndTime: String,
     #[serde(default)] pub statusOX: String,
+    #[serde(default)] pub stat: String,
     #[serde(default)] pub loadComments: String,
     #[serde(default)] pub ryderComments: String,
     pub gmComments: Option<String>,
@@ -368,14 +369,14 @@ pub fn get_allowed_fields(role: &str) -> Option<Vec<&'static str>> {
     permissions.insert("admin", vec!["*"]);
     permissions.insert("supervisor", vec![
         "hour", "dockCode", "adjustedStartTime", "scheduleEndDate",
-        "scheduleEndTime", "scac", "statusOX", "trailer1", "trailer2",
+        "scheduleEndTime", "scac", "statusOX", "stat", "trailer1", "trailer2",
         "gateArrivalTime", "actualStartTime", "actualEndTime", "door", "doorArrivalTime"
     ]);
     permissions.insert("clerk", vec![
         "gateArrivalTime", "actualStartTime", "actualEndTime",
         "door", "doorArrivalTime", "dockComments"
     ]);
-    permissions.insert("receiving", vec!["statusOX"]);
+    permissions.insert("receiving", vec!["statusOX", "stat"]);
     permissions.insert("mfu", vec!["ryderComments"]);
     permissions.insert("security", vec!["gateArrivalTime", "gmComments"]);
 

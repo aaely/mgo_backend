@@ -200,6 +200,7 @@ pub fn build_update_query(role: &str, trailer: &TrailerRecord) -> neo4rs::Query 
     if is_admin || allowed.contains(&"actualStartTime")   { sets.push("t.actualStartTime = $actualStartTime") }
     if is_admin || allowed.contains(&"actualEndTime")     { sets.push("t.actualEndTime = $actualEndTime") }
     if is_admin || allowed.contains(&"statusOX")          { sets.push("t.statusOX = $statusOX") }
+    if is_admin || allowed.contains(&"stat")              { sets.push("t.stat = $stat") }
     if is_admin || allowed.contains(&"ryderComments")     { sets.push("t.ryderComments = $ryderComments") }
     if is_admin || allowed.contains(&"gmComments")        { sets.push("t.gmComments = $gmComments") }
     if is_admin || allowed.contains(&"door")              { sets.push("t.door = $door") }
@@ -224,6 +225,7 @@ pub fn build_update_query(role: &str, trailer: &TrailerRecord) -> neo4rs::Query 
         .param("actualStartTime",   trailer.actualStartTime.clone())
         .param("actualEndTime",     trailer.actualEndTime.clone())
         .param("statusOX",          trailer.statusOX.clone())
+        .param("stat",              trailer.stat.clone())
         .param("ryderComments",     trailer.ryderComments.clone())
         .param("gmComments",        trailer.gmComments.clone().unwrap_or_default())
         .param("door",              trailer.door.clone())
@@ -235,7 +237,7 @@ pub fn get_event_type(field: &str) -> &'static str {
         "hour" | "dockCode" | "scac" | "trailer1" | "trailer2" |
         "adjustedStartTime" | "scheduleEndDate" | "scheduleEndTime" |
         "gateArrivalTime" | "actualStartTime" | "actualEndTime" |
-        "statusOX" | "ryderComments" | "gmComments" |
+        "statusOX" | "stat" | "ryderComments" | "gmComments" |
         "door" | "doorArrivalTime" | "LiveAdd" => "Trailer Updates",
         "shift_rolled"                          => "Shift Roll",
         "hot_part_created" | "hot_part_closed"  => "Hot Parts",
