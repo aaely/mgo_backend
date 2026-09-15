@@ -991,6 +991,23 @@ pub async fn roll_next_shift(
         eprintln!("Failed to write roll_next_shift audit event: {:?}", e);
     }
 
+    // ── Tell every client to refetch ──
+    // The whole LiveTrailer set was just replaced (completed ones deleted,
+    // survivors flipped to 'C', StagedTrailers promoted), so per-row
+    // trailer_update/add_on messages don't apply. Signal only — clients pull
+    // from get_live_trailers, which already scopes V/U docks by role, rather
+    // than us partitioning a bulk payload per role and risking a leak.
+    let ws_msg = IncomingMessage {
+        r#type: "shift_rolled".to_string(),
+        data:   None,
+    };
+    if let Ok(message) = serde_json::to_string(&ws_msg) {
+        let ws_list = state.ws_list.lock().await;
+        for (_, (tx, _)) in ws_list.iter() {
+            let _ = tx.send(Message::Text(message.clone()));
+        }
+    }
+
     Ok(Json("Roll next shift completed successfully"))
 }
 
