@@ -371,13 +371,28 @@ pub async fn get_delivered(
 
     let mut created_lines = Vec::<Delivered>::new();  // ← mut
 
-    let q = query("
-        MATCH (dt:DeliveredTrailer)
-        WHERE dt.delivery_date >= $date1 AND dt.delivery_date <= $date2
-        RETURN dt
-    ")
-    .param("date1", dates.date1.clone())
-    .param("date2", dates.date2.clone());
+    let trailer = dates.trailer_id.trim().to_string();
+
+    let q = if !trailer.is_empty() {
+        // A trailer search ignores the date range and looks across every delivery
+        query("
+            MATCH (dt:DeliveredTrailer)
+            WHERE toUpper(dt.trailer_id) CONTAINS toUpper($trailer)
+            RETURN dt
+            ORDER BY dt.delivery_date DESC
+        ")
+        .param("trailer", trailer)
+    } else if dates.date1.is_empty() || dates.date2.is_empty() {
+        return Err(Json("Provide a trailer ID or a date range"));
+    } else {
+        query("
+            MATCH (dt:DeliveredTrailer)
+            WHERE dt.delivery_date >= $date1 AND dt.delivery_date <= $date2
+            RETURN dt
+        ")
+        .param("date1", dates.date1.clone())
+        .param("date2", dates.date2.clone())
+    };
 
     match graph.execute(q).await {
         Ok(mut result) => {

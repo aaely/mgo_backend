@@ -121,8 +121,10 @@ pub struct UserResponse {
 
 #[derive(Serialize, Deserialize)]
 pub struct DeliveredRequest {
-    pub date1: String,
-    pub date2: String,
+    #[serde(default)] pub date1: String,
+    #[serde(default)] pub date2: String,
+    /// Partial, case-insensitive trailer match; empty means no trailer filter
+    #[serde(default)] pub trailer_id: String,
 }
 
 #[derive(Serialize, Deserialize)]
