@@ -20,6 +20,7 @@ pub struct InTransit {
     pub destination: String,
     pub supplier: String,
     pub location: String,
+    #[serde(default)] pub shipDate: String,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Default, Debug)]
@@ -219,6 +220,9 @@ pub struct DeliveryRequest {
 #[derive(Deserialize, Serialize)]
 pub struct RollNextShiftRequest {
     pub operational_date: String,
+    /// The date-shift being rolled INTO, e.g. "2026-09-15-2nd". Carryovers are
+    /// re-stamped with it so they file under the shift they're worked in.
+    pub next_date_shift: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

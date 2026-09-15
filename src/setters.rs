@@ -310,7 +310,8 @@ pub async fn upload_in_transit(
         let query = query("
             MERGE (trailer:Trailer {id: $trailer})
             MERGE (sid:SID {id: $sid, ciscoID: $cisco})
-            ON CREATE SET sid.id = $sid
+            ON CREATE SET sid.id = $sid, sid.shipDate = $shipDate
+            ON MATCH SET sid.shipDate = $shipDate
             MERGE (trailer)-[:HAS_SID]->(sid)
             MERGE (sid)-[:BELONGS_TO]->(trailer)
             MERGE (sid)-[:HAS_PART]->(part:Part {number: $part, quantity: toInteger($quantity), duns: $duns})
@@ -320,7 +321,8 @@ pub async fn upload_in_transit(
         .param("cisco",    line.cisco.clone())
         .param("part",     line.part.clone())
         .param("quantity", line.quantity.clone())
-        .param("duns",     line.duns.clone());
+        .param("duns",     line.duns.clone())
+        .param("shipDate", line.shipDate.clone());
 
         graph.run(query).await.map_err(|e| {
             eprintln!("Failed to merge trailer/sid/part nodes: {:?}", e);
@@ -861,10 +863,14 @@ pub async fn roll_next_shift(
         Json("Failed to push rescheduled trailers")
     })?;
 
-    // ── Query 3: Delete LiveTrailers where actualEndTime is not empty ──
+    // ── Query 3: Delete rescheduled, completed, and no-show LiveTrailers ──
+    // No-shows don't roll forward; Query 1 already archived them as statusOX 'N'.
+    // What survives is exactly the arrived-but-unfinished carryover set.
     let delete_query = query("
         MATCH (t:LiveTrailer)
-        WHERE t.statusOX = 'R' OR (t.gateArrivalTime <> '' AND t.actualEndTime <> '')
+        WHERE t.statusOX = 'R'
+           OR (t.gateArrivalTime <> '' AND t.actualEndTime <> '')
+           OR (t.gateArrivalTime = '' AND t.actualEndTime = '')
         DELETE t
     ");
 
@@ -873,14 +879,17 @@ pub async fn roll_next_shift(
         Json("Failed to delete completed live trailers")
     })?;
 
-    // ── Query 4: Set statusOX = 'C' on remaining LiveTrailers ──
+    // ── Query 4: Mark survivors as carryovers and re-stamp them for the new shift ──
+    // Runs after the snapshot, so the archived copy keeps the shift it was worked
+    // in while the live node moves forward and files under the shift it rolls into.
     let status_query = query("
         MATCH (t:LiveTrailer)
         SET t.statusOX = CASE
             WHEN t.gateArrivalTime <> '' THEN 'C'
             ELSE t.statusOX
-        END
-    ");
+        END,
+        t.dateShift = $next_date_shift
+    ").param("next_date_shift", req.next_date_shift.clone());
 
     graph.run(status_query).await.map_err(|e| {
         eprintln!("Failed to update statusOX on live trailers: {:?}", e);
