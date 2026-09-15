@@ -864,7 +864,7 @@ pub async fn roll_next_shift(
     // ── Query 3: Delete LiveTrailers where actualEndTime is not empty ──
     let delete_query = query("
         MATCH (t:LiveTrailer)
-        WHERE t.gateArrivalTime <> '' AND (t.actualEndTime <> '' OR t.actualEndTime IS NULL)
+        WHERE t.statusOX = 'R' OR (t.gateArrivalTime <> '' AND t.actualEndTime <> '')
         DELETE t
     ");
 
