@@ -29,7 +29,8 @@ pub async fn update_io(
             s.ScheduleTime = $schedule_time,
             s.Status       = $status,
             s.Supplier     = $supplier,
-            s.Scac         = $scac
+            s.Scac         = $scac,
+            s.CarrierEmail = $carrier_email
         RETURN t, s
     ")
     .param("old_trailer",   update_io.Trailer.clone())
@@ -41,7 +42,8 @@ pub async fn update_io(
     .param("supplier",      update_io.Schedule.Supplier.clone())
     .param("schedule_date", update_io.Schedule.ScheduleDate.clone())
     .param("schedule_time", update_io.Schedule.ScheduleTime.clone())
-    .param("status",        update_io.Schedule.Status.clone());
+    .param("status",        update_io.Schedule.Status.clone())
+    .param("carrier_email", update_io.Schedule.CarrierEmail.clone());
 
     graph.run(schedule_query).await.map_err(|e| {
         eprintln!("Failed to update schedule: {:?}", e);
@@ -134,6 +136,8 @@ pub async fn update_io(
                     Status:       schedule_node.get("Status").unwrap_or_default(),
                     Location:     schedule_node.get("Location").unwrap_or_default(),
                     Supplier:     schedule_node.get("Supplier").unwrap_or_default(),
+                    CarrierEmail: schedule_node.get("CarrierEmail").unwrap_or_default(),
+                    ShipDate:     schedule_node.get("ShipDate").unwrap_or_default(),
                 };
 
                 let parts: Vec<String> = row.get("parts").unwrap_or_else(|_| Vec::new());
@@ -310,8 +314,7 @@ pub async fn upload_in_transit(
         let query = query("
             MERGE (trailer:Trailer {id: $trailer})
             MERGE (sid:SID {id: $sid, ciscoID: $cisco})
-            ON CREATE SET sid.id = $sid, sid.shipDate = $shipDate
-            ON MATCH SET sid.shipDate = $shipDate
+            ON CREATE SET sid.id = $sid
             MERGE (trailer)-[:HAS_SID]->(sid)
             MERGE (sid)-[:BELONGS_TO]->(trailer)
             MERGE (sid)-[:HAS_PART]->(part:Part {number: $part, quantity: toInteger($quantity), duns: $duns})
@@ -321,8 +324,7 @@ pub async fn upload_in_transit(
         .param("cisco",    line.cisco.clone())
         .param("part",     line.part.clone())
         .param("quantity", line.quantity.clone())
-        .param("duns",     line.duns.clone())
-        .param("shipDate", line.shipDate.clone());
+        .param("duns",     line.duns.clone());
 
         graph.run(query).await.map_err(|e| {
             eprintln!("Failed to merge trailer/sid/part nodes: {:?}", e);
@@ -331,14 +333,19 @@ pub async fn upload_in_transit(
     }
 
     // ── Query 2: Collect unique trailer → destination pairs, then merge Schedule ──
-    let mut trailer_destinations: std::collections::HashMap<String, (String, String, String)> = std::collections::HashMap::new();
+    // A trailer's SIDs can ship on different days, so its Schedule keeps the earliest
+    // non-blank ship date (YYYY-MM-DD compares correctly as text)
+    let mut trailer_destinations: std::collections::HashMap<String, (String, String, String, String)> = std::collections::HashMap::new();
     for line in upload_in_transit.iter() {
-        trailer_destinations
+        let entry = trailer_destinations
             .entry(line.trailer.clone())
-            .or_insert_with(|| (line.destination.clone(), line.supplier.clone(), line.location.clone()));
+            .or_insert_with(|| (line.destination.clone(), line.supplier.clone(), line.location.clone(), String::new()));
+        if !line.shipDate.is_empty() && (entry.3.is_empty() || line.shipDate < entry.3) {
+            entry.3 = line.shipDate.clone();
+        }
     }
 
-    for (trailer_id, (destination, supplier, location)) in trailer_destinations.iter() {
+    for (trailer_id, (destination, supplier, location, ship_date)) in trailer_destinations.iter() {
         let schedule_query = query("
             MATCH (trailer:Trailer {id: $trailer})
             MERGE (trailer)-[:HAS_SCHEDULE]->(s:Schedule)
@@ -352,16 +359,19 @@ pub async fn upload_in_transit(
                 s.Comments     = '',
                 s.Status       = '',
                 s.Scac         = '',
-                s.Location     = $location
+                s.Location     = $location,
+                s.ShipDate     = $ship_date
             ON MATCH SET
                 s.Destination  = $destination,
                 s.Supplier     = $supplier,
-                s.Location     = $location
+                s.Location     = $location,
+                s.ShipDate     = CASE WHEN $ship_date = '' THEN coalesce(s.ShipDate, '') ELSE $ship_date END
         ")
         .param("trailer",     trailer_id.clone())
         .param("destination", destination.clone())
         .param("location",    location.clone())
-        .param("supplier",    supplier.clone());
+        .param("supplier",    supplier.clone())
+        .param("ship_date",   ship_date.clone());
 
         graph.run(schedule_query).await.map_err(|e| {
             eprintln!("Failed to create/update schedule node: {:?}", e);
@@ -649,7 +659,16 @@ pub async fn delivered(
     
     let graph = &state.graph;
     
-    let delivery_date = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    // The operator confirms the delivery date; only callers that don't send one
+    // fall back to today
+    let delivery_date = if req.delivery_date.trim().is_empty() {
+        chrono::Utc::now().format("%Y-%m-%d").to_string()
+    } else {
+        chrono::NaiveDate::parse_from_str(req.delivery_date.trim(), "%Y-%m-%d")
+            .map_err(|_| Json("Invalid delivery_date; expected YYYY-MM-DD"))?
+            .format("%Y-%m-%d")
+            .to_string()
+    };
 
     // ── Query 1: Fetch schedule, parts, and sids for the trailer ──
     let fetch_query = query("
@@ -676,6 +695,8 @@ pub async fn delivered(
                     Status:       schedule_node.get("Status").unwrap_or_default(),
                     Supplier:     schedule_node.get("Supplier").unwrap_or_default(),
                     Location:     schedule_node.get("Location").unwrap_or_default(),
+                    CarrierEmail: schedule_node.get("CarrierEmail").unwrap_or_default(),
+                    ShipDate:     schedule_node.get("ShipDate").unwrap_or_default(),
                 };
 
                 let parts: Vec<String> = row.get("parts").unwrap_or_else(|_| Vec::new());

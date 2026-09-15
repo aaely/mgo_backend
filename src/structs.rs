@@ -35,6 +35,9 @@ pub struct Schedule {
     pub Supplier: String,
     pub Scac: String,
     pub Location: String,
+    #[serde(default)] pub CarrierEmail: String,
+    /// Earliest ship date across the trailer's SIDs (YYYY-MM-DD), set by the in-transit upload
+    #[serde(default)] pub ShipDate: String,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Default, Debug)]
@@ -213,7 +216,9 @@ pub struct DeliveredTrailer {
 
 #[derive(Deserialize, Serialize)]
 pub struct DeliveryRequest {
-    pub trailer_id: String
+    pub trailer_id: String,
+    /// Operator-confirmed YYYY-MM-DD; empty falls back to today for older callers.
+    #[serde(default)] pub delivery_date: String,
 }
 
 

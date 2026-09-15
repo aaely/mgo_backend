@@ -251,6 +251,8 @@ pub async fn get_io(
                     let Location: String = lms_node.get("Location").unwrap_or_default();
                     let Scac: String = lms_node.get("Scac").unwrap_or_default();
                     let Supplier: String = lms_node.get("Supplier").unwrap_or_default();
+                    let CarrierEmail: String = lms_node.get("CarrierEmail").unwrap_or_default();
+                    let ShipDate: String = lms_node.get("ShipDate").unwrap_or_default();
                 let s = Schedule {
                     TrailerID: trailer.clone(),
                     OriginalDate,
@@ -262,6 +264,8 @@ pub async fn get_io(
                     Location,
                     Supplier,
                     Scac,
+                    CarrierEmail,
+                    ShipDate,
                 };
                 let parts = record.get::<Vec<String>>("parts")
                     .unwrap_or_else(|_| {
