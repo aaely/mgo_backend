@@ -187,6 +187,7 @@ async fn main() {
             unassign_shift,
             get_scan_routes,
             get_part_routes,
+            get_route_delivering,
             get_exceptions,
             upload_exception,
             delivered,

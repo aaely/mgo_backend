@@ -404,6 +404,11 @@ pub struct PartASN {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct RouteDelivering {
+    pub trailer: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct Contact {
     pub email: String,
     pub name:  String,

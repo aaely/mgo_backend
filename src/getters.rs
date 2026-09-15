@@ -1956,3 +1956,36 @@ pub async fn get_part_routes(
         }
     }
 }
+
+/// Shift-builder hover: is a trailer for this route still set to deliver?
+/// A LiveTrailer on the route with no actualEndTime hasn't been emptied yet,
+/// which makes the load being built a candidate to reschedule over one that has.
+#[get("/api/get_route_delivering?<route>")]
+pub async fn get_route_delivering(
+    route: String,
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+) -> Json<RouteDelivering> {
+    let graph = &state.graph;
+
+    let q = query("
+        MATCH (t:LiveTrailer)
+        WHERE t.routeId STARTS WITH $route
+          AND (t.actualEndTime IS NULL OR t.actualEndTime = '')
+        RETURN t.trailer1 AS trailer
+        LIMIT 1
+    ").param("route", route);
+
+    match graph.execute(q).await {
+        Ok(mut result) => match result.next().await {
+            Ok(Some(row)) => Json(RouteDelivering {
+                trailer: row.get("trailer").unwrap_or_default(),
+            }),
+            _ => Json(RouteDelivering::default()),
+        },
+        Err(e) => {
+            eprintln!("get_route_delivering failed: {:?}", e);
+            Json(RouteDelivering::default())
+        }
+    }
+}
