@@ -1229,6 +1229,7 @@ pub async fn get_scan_parts(
                 day4:     node.get("day4").ok(),
                 day5:     node.get("day5").ok(),
                 day6:     node.get("day6").ok(),
+                ..Default::default()
             });
         }
     }
@@ -1408,6 +1409,7 @@ pub async fn get_edock_asl(state: &State<AppState>) -> Json<Vec<PartASL>> {
                 day4:     node.get::<f64>("day4").ok(),
                 day5:     node.get::<f64>("day5").ok(),
                 day6:     node.get::<f64>("day6").ok(),
+                ..Default::default()
             });
         }
     }
@@ -1681,6 +1683,7 @@ pub async fn get_part_asl(state: &State<AppState>) -> Json<Vec<PartASL>> {
                 day4:     node.get("day4").ok(),
                 day5:     node.get("day5").ok(),
                 day6:     node.get("day6").ok(),
+                ..Default::default()
             });
         }
     }
@@ -1988,4 +1991,109 @@ pub async fn get_route_delivering(
             Json(RouteDelivering::default())
         }
     }
+}
+
+/// Rail drill ASL: parts on the rail decks with days on hand, including the full
+/// 21-day requirement horizon the adjusted-DoH calculation walks.
+#[get("/api/get_rail_asl")]
+pub async fn get_rail_asl(state: &State<AppState>, _user: AuthenticatedUser) -> Json<Vec<PartASL>> {
+    let graph = &state.graph;
+
+    let q = neo4rs::query(
+        "MATCH (l:PartASL)
+         WHERE l.deck IN ['AF', '1R', '3R', '6R', '8R'] AND l.doh > 0
+         RETURN l"
+    );
+
+    let mut result = match graph.execute(q).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("get_rail_asl error: {e}");
+            return Json(vec![]);
+        }
+    };
+
+    let mut parts: Vec<PartASL> = vec![];
+    while let Ok(Some(row)) = result.next().await {
+        if let Ok(node) = row.get::<neo4rs::Node>("l") {
+            parts.push(PartASL {
+                deck:     node.get("deck").unwrap_or_default(),
+                part:     node.get("part").unwrap_or_default(),
+                duns:     node.get("duns").unwrap_or_default(),
+                supplier: node.get("supplier").unwrap_or_default(),
+                desc:     node.get("desc").unwrap_or_default(),
+                doh:      node.get::<f64>("doh").unwrap_or_default(),
+                bank:     node.get::<i64>("bank").unwrap_or_default() as u32,
+                cbal:     node.get::<f64>("cbal").unwrap_or_default(),
+                day1:     node.get::<f64>("day1").ok(),
+                day2:     node.get::<f64>("day2").ok(),
+                day3:     node.get::<f64>("day3").ok(),
+                day4:     node.get::<f64>("day4").ok(),
+                day5:     node.get::<f64>("day5").ok(),
+                day6:     node.get::<f64>("day6").ok(),
+                day7:     node.get::<f64>("day7").ok(),
+                day8:     node.get::<f64>("day8").ok(),
+                day9:     node.get::<f64>("day9").ok(),
+                day10:    node.get::<f64>("day10").ok(),
+                day11:    node.get::<f64>("day11").ok(),
+                day12:    node.get::<f64>("day12").ok(),
+                day13:    node.get::<f64>("day13").ok(),
+                day14:    node.get::<f64>("day14").ok(),
+                day15:    node.get::<f64>("day15").ok(),
+                day16:    node.get::<f64>("day16").ok(),
+                day17:    node.get::<f64>("day17").ok(),
+                day18:    node.get::<f64>("day18").ok(),
+                day19:    node.get::<f64>("day19").ok(),
+                day20:    node.get::<f64>("day20").ok(),
+                day21:    node.get::<f64>("day21").ok(),
+            });
+        }
+    }
+
+    Json(parts)
+}
+
+/// Rail drill ASN: shipments on the rail decks. Dock normalization and status-5
+/// (received) handling stay client-side, where the staging math lives.
+#[get("/api/get_rail_asn")]
+pub async fn get_rail_asn(state: &State<AppState>, _user: AuthenticatedUser) -> Json<Vec<PartASN>> {
+    let graph = &state.graph;
+
+    let q = neo4rs::query(
+        "MATCH (p:PartASN) WHERE p.deck IN ['1R', '3R', '6R', '8R'] RETURN p"
+    );
+
+    let mut result = match graph.execute(q).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("get_rail_asn error: {e}");
+            return Json(vec![]);
+        }
+    };
+
+    let mut asns: Vec<PartASN> = vec![];
+    while let Ok(Some(row)) = result.next().await {
+        if let Ok(node) = row.get::<neo4rs::Node>("p") {
+            asns.push(PartASN {
+                scac:         node.get("scac").unwrap_or_default(),
+                trailer:      node.get("trailer").unwrap_or_default(),
+                deck:         node.get("deck").unwrap_or_default(),
+                part:         node.get("part").unwrap_or_default(),
+                mode:         node.get("mode").unwrap_or_default(),
+                duns:         node.get("duns").unwrap_or_default(),
+                sid:          node.get("sid").unwrap_or_default(),
+                countComment: Some(node.get("countComment").unwrap_or_default()),
+                shipComment:  node.get("shipComment").unwrap_or_default(),
+                shipDate:     node.get("shipDate").unwrap_or_default(),
+                dock:         node.get("dock").unwrap_or_default(),
+                eda:          node.get("eda").unwrap_or_default(),
+                eta:          node.get("eta").unwrap_or_default(),
+                quantity:     Some(node.get::<f64>("quantity").unwrap_or_default()),
+                status:       Some(node.get::<i64>("status").unwrap_or_default() as u32),
+                country:      node.get("country").unwrap_or_default(),
+            });
+        }
+    }
+
+    Json(asns)
 }

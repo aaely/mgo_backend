@@ -233,6 +233,7 @@ pub async fn part_monitoring_service(
                             day4:     node.get("day4").unwrap_or_default(),
                             day5:     node.get("day5").unwrap_or_default(),
                             day6:     node.get("day6").unwrap_or_default(),
+                            ..Default::default()
                         });
                     }
                 }

@@ -2116,7 +2116,22 @@ pub async fn upload_part_asl(
                 day3:     $day3,
                 day4:     $day4,
                 day5:     $day5,
-                day6:     $day6
+                day6:     $day6,
+                day7:     $day7,
+                day8:     $day8,
+                day9:     $day9,
+                day10:    $day10,
+                day11:    $day11,
+                day12:    $day12,
+                day13:    $day13,
+                day14:    $day14,
+                day15:    $day15,
+                day16:    $day16,
+                day17:    $day17,
+                day18:    $day18,
+                day19:    $day19,
+                day20:    $day20,
+                day21:    $day21
             })
         ")
         .param("deck",     asl.deck.clone())
@@ -2132,7 +2147,22 @@ pub async fn upload_part_asl(
         .param("day3",     asl.day3)
         .param("day4",     asl.day4)
         .param("day5",     asl.day5)
-        .param("day6",     asl.day6);
+        .param("day6",     asl.day6)
+        .param("day7",     asl.day7)
+        .param("day8",     asl.day8)
+        .param("day9",     asl.day9)
+        .param("day10",    asl.day10)
+        .param("day11",    asl.day11)
+        .param("day12",    asl.day12)
+        .param("day13",    asl.day13)
+        .param("day14",    asl.day14)
+        .param("day15",    asl.day15)
+        .param("day16",    asl.day16)
+        .param("day17",    asl.day17)
+        .param("day18",    asl.day18)
+        .param("day19",    asl.day19)
+        .param("day20",    asl.day20)
+        .param("day21",    asl.day21);
 
         graph.run(q).await.map_err(|e| {
             eprintln!("Failed to upload PartASL: {:?}", e);

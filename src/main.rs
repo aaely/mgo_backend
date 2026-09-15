@@ -139,6 +139,8 @@ async fn main() {
             send_slack,
             send_rescheduled_slack,
             get_edock_asl,
+            get_rail_asl,
+            get_rail_asn,
             get_scan_parts,
             login,
             sso_login,

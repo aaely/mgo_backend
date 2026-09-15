@@ -451,6 +451,21 @@ pub struct PartASL {
     pub day4:     Option<f64>,
     pub day5:     Option<f64>,
     pub day6:     Option<f64>,
+    pub day7:     Option<f64>,
+    pub day8:     Option<f64>,
+    pub day9:     Option<f64>,
+    pub day10:    Option<f64>,
+    pub day11:    Option<f64>,
+    pub day12:    Option<f64>,
+    pub day13:    Option<f64>,
+    pub day14:    Option<f64>,
+    pub day15:    Option<f64>,
+    pub day16:    Option<f64>,
+    pub day17:    Option<f64>,
+    pub day18:    Option<f64>,
+    pub day19:    Option<f64>,
+    pub day20:    Option<f64>,
+    pub day21:    Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
