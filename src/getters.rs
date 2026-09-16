@@ -2079,7 +2079,7 @@ pub async fn get_rail_asn(state: &State<AppState>, _user: AuthenticatedUser) -> 
     let graph = &state.graph;
 
     let q = neo4rs::query(
-        "MATCH (p:PartASN) WHERE p.deck IN ['1R', '3R', '6R', '8R'] RETURN p"
+        "MATCH (p:PartASN) WHERE p.deck IN ['1R', '3R', '6R', '8R'] AND p.mode in ['J', 'R'] RETURN p"
     );
 
     let mut result = match graph.execute(q).await {

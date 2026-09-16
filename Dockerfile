@@ -1,29 +1,52 @@
-# Build context is this repo (mgo_backend) itself — lms_react is pulled
-# straight from GitHub during the build instead of being COPYd from a local
-# sibling checkout, so this works from a plain Git-source OpenShift
-# BuildConfig (which can only clone one repo) as well as a local build:
-#   docker build -f Dockerfile -t mgo-backend:test .
-# (run from inside mgo_backend/)
+# Build context is this repo (mgo_backend) itself.
+# lms_react is pulled directly from GitHub during the build.
+#
+# Local build with a sibling lms_react checkout:
+#   $envB64 = [Convert]::ToBase64String(
+#     [IO.File]::ReadAllBytes("..\lms_react\.env.production")
+#   )
+#   docker build --build-arg "FRONTEND_ENV_B64=$envB64" `
+#     -f Dockerfile -t mgo-backend:test .
+#
+# OpenShift BuildConfig must provide FRONTEND_ENV_B64 unless
+# .env.production is committed in the lms_react repository.
 
 # ── Stage 1: Build frontend ──
 FROM node:22-slim AS frontend-builder
 
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /frontend
 
-# Pin to a specific branch/tag here once lms_react has stable releases —
-# right now this always builds whatever's currently on main.
+# Currently follows the repository's default branch.
+# Pin this to a stable tag or commit when available.
 RUN git clone --depth=1 https://github.com/aaely/lms_react.git .
-COPY lms_react/.env.production .env.production
+
+# Optional base64-encoded frontend environment file.
+# This avoids COPYing a file outside the mgo_backend build context.
+ARG FRONTEND_ENV_B64=""
+
+RUN if [ -n "$FRONTEND_ENV_B64" ]; then \
+        printf '%s' "$FRONTEND_ENV_B64" | base64 -d > .env.production; \
+    elif [ -f .env.production ]; then \
+        echo "Using .env.production from the cloned lms_react repository"; \
+    else \
+        echo "ERROR: .env.production was not provided." >&2; \
+        echo "Provide FRONTEND_ENV_B64 or commit .env.production to lms_react." >&2; \
+        exit 1; \
+    fi
+
 RUN npm ci
 RUN npm run build
 
 # ── Stage 2: Build Rust binary ──
 FROM rust:1.95-slim-bookworm AS builder
 
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends pkg-config libssl-dev && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -39,36 +62,33 @@ RUN cargo build --release
 # ── Stage 3: Runtime ──
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libssl3 ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
-# If your AD domain controller's cert (for LDAP_URL=ldaps://...) is signed by
-# an internal/private CA rather than a public one, this container won't trust
-# it — only the standard public CA bundle is installed above. The actual cert
-# comes from an OpenShift Secret mounted at runtime (see k8s/deployment.yaml's
-# ca-certs volume), not baked in here — so update-ca-certificates has to run
-# at container start (docker-entrypoint.sh) instead of at build time, once
-# the Secret's contents actually exist on disk. Just need these paths
-# writable by whatever arbitrary UID OpenShift assigns at runtime.
-RUN mkdir -p /usr/local/share/ca-certificates/custom \
- && chown -R 1001:0 /usr/local/share/ca-certificates /etc/ssl/certs \
- && chmod -R g=u /usr/local/share/ca-certificates /etc/ssl/certs
+# Runtime CA certificates are mounted from an OpenShift Secret.
+RUN mkdir -p /usr/local/share/ca-certificates/custom && \
+    chown -R 1001:0 /usr/local/share/ca-certificates /etc/ssl/certs && \
+    chmod -R g=u /usr/local/share/ca-certificates /etc/ssl/certs
 
 WORKDIR /app
 
 COPY --from=builder /app/target/release/rocket_http .
 COPY docker-entrypoint.sh .
 RUN chmod +x docker-entrypoint.sh
+
 COPY --from=frontend-builder /frontend/dist ./dist
 
-# OpenShift runs containers with an arbitrary UID in group 0.
-# chown 1001:0 + chmod g=u lets any UID in group 0 read/exec these files.
-RUN chown -R 1001:0 /app && chmod -R g=u /app
+# OpenShift arbitrary UID support
+RUN chown -R 1001:0 /app && \
+    chmod -R g=u /app
 
 USER 1001
 
-# HTTP / WS (plain)
+# HTTP / WS
 EXPOSE 8000 9001
-# HTTPS / WSS (TLS — only used when USE_HTTPS=true / --https flag)
+
+# HTTPS / WSS
 EXPOSE 8443
 
 ENTRYPOINT ["./docker-entrypoint.sh"]
