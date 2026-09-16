@@ -62,6 +62,9 @@ pub struct LMSRecord {
 pub struct PartQty {
     pub part:     String,
     pub quantity: i64,
+    /// Schedule date of the trailer this quantity arrived on, so the frontend
+    /// can place it on the right day without re-deriving it from the row
+    #[serde(default)] pub scheduleDate: String,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Default, Debug)]

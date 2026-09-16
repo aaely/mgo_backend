@@ -230,12 +230,13 @@ pub async fn get_io(
     let query = query("
         MATCH (t:Trailer)-[:HAS_SCHEDULE]->(s:Schedule)
         WITH t, s
+        WHERE s.ScheduleDate <> ''
         MATCH (t)-[:HAS_SID]->(sid:SID)
         WITH t, s, COLLECT(DISTINCT sid.id) AS sids
         MATCH (t)-[:CONTAINS_PART]->(p:Part)
         RETURN t.id AS trailer, s, sids,
                COLLECT(DISTINCT p.number) AS parts,
-               COLLECT(DISTINCT {part: p.number, quantity: toInteger(coalesce(p.quantity, 0))}) AS partQtys
+               COLLECT(DISTINCT {part: p.number, quantity: toInteger(coalesce(p.quantity, 0)), scheduleDate: s.ScheduleDate}) AS partQtys
     ");
 
     match graph.execute(query).await {
