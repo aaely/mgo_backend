@@ -233,10 +233,9 @@ pub async fn get_io(
         MATCH (t)-[:HAS_SID]->(sid:SID)
         WITH t, s, COLLECT(DISTINCT sid.id) AS sids
         MATCH (t)-[:CONTAINS_PART]->(p:Part)
-        WITH t, s, sids, p.number AS partNum, sum(toInteger(coalesce(p.quantity, 0))) AS qty
-        WITH t, s, sids, COLLECT(partNum) AS parts,
-             COLLECT({part: partNum, quantity: qty}) AS partQtys
-        RETURN t.id AS trailer, s, sids, parts, partQtys
+        RETURN t.id AS trailer, s, sids,
+               COLLECT(DISTINCT p.number) AS parts,
+               COLLECT(DISTINCT {part: p.number, quantity: toInteger(coalesce(p.quantity, 0))}) AS partQtys
     ");
 
     match graph.execute(query).await {
