@@ -58,12 +58,20 @@ pub struct LMSRecord {
     pub dock_sequence:         String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct PartQty {
+    pub part:     String,
+    pub quantity: i64,
+}
+
 #[derive(Serialize, Deserialize, PartialEq, Default, Debug)]
 pub struct IOResponse {
     pub Trailer: String,
     pub Schedule: Schedule,
     pub Sids: Vec<String>,
     pub Parts: Vec<String>,
+    /// Same parts as `Parts`, carrying the quantity the running balance needs
+    #[serde(default)] pub PartQtys: Vec<PartQty>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Default, Debug)]

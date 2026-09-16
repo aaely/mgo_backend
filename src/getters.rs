@@ -229,11 +229,14 @@ pub async fn get_io(
 
     let query = query("
         MATCH (t:Trailer)-[:HAS_SCHEDULE]->(s:Schedule)
-        with t,s
-        MATCH(t)-[:HAS_SID]->(sid:SID)
-        with distinct t, s, sid
-        MATCH(t)-[:CONTAINS_PART]->(p:Part)
-        return t.id as trailer, s, COLLECT(DISTINCT sid.id) as sids, COLLECT(DISTINCT p.number) as parts
+        WITH t, s
+        MATCH (t)-[:HAS_SID]->(sid:SID)
+        WITH t, s, COLLECT(DISTINCT sid.id) AS sids
+        MATCH (t)-[:CONTAINS_PART]->(p:Part)
+        WITH t, s, sids, p.number AS partNum, sum(toInteger(coalesce(p.quantity, 0))) AS qty
+        WITH t, s, sids, COLLECT(partNum) AS parts,
+             COLLECT({part: partNum, quantity: qty}) AS partQtys
+        RETURN t.id AS trailer, s, sids, parts, partQtys
     ");
 
     match graph.execute(query).await {
@@ -277,11 +280,14 @@ pub async fn get_io(
                         println!("Failed to extract parts");
                         Vec::new()
                     });
+                // Quantities live on the Part nodes; the running balance needs them
+                let part_qtys = record.get::<Vec<PartQty>>("partQtys").unwrap_or_default();
                 let d = IOResponse {
                     Trailer: trailer,
                     Schedule: s,
                     Sids: sids,
                     Parts: parts,
+                    PartQtys: part_qtys,
                 };
                 data.push(d);
             }
@@ -1702,7 +1708,21 @@ pub async fn get_part_asl(state: &State<AppState>) -> Json<Vec<PartASL>> {
                 day4:     node.get("day4").ok(),
                 day5:     node.get("day5").ok(),
                 day6:     node.get("day6").ok(),
-                ..Default::default()
+                day7:     node.get("day7").ok(),
+                day8:     node.get("day8").ok(),
+                day9:     node.get("day9").ok(),
+                day10:    node.get("day10").ok(),
+                day11:    node.get("day11").ok(),
+                day12:    node.get("day12").ok(),
+                day13:    node.get("day13").ok(),
+                day14:    node.get("day14").ok(),
+                day15:    node.get("day15").ok(),
+                day16:    node.get("day16").ok(),
+                day17:    node.get("day17").ok(),
+                day18:    node.get("day18").ok(),
+                day19:    node.get("day19").ok(),
+                day20:    node.get("day20").ok(),
+                day21:    node.get("day21").ok(),
             });
         }
     }

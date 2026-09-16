@@ -149,6 +149,9 @@ pub async fn update_io(
                     Schedule: schedule,
                     Parts:    parts,
                     Sids:     sids,
+                    // The page refetches get_io after an edit, so this response
+                    // doesn't need to carry quantities
+                    PartQtys: Vec::new(),
                 }))
             } else {
                 Err(Json("No matching trailer found"))
