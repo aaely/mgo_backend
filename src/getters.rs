@@ -230,7 +230,6 @@ pub async fn get_io(
     let query = query("
         MATCH (t:Trailer)-[:HAS_SCHEDULE]->(s:Schedule)
         WITH t, s
-        WHERE s.ScheduleDate <> ''
         MATCH (t)-[:HAS_SID]->(sid:SID)
         WITH t, s, COLLECT(DISTINCT sid.id) AS sids
         MATCH (t)-[:CONTAINS_PART]->(p:Part)
