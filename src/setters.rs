@@ -65,10 +65,15 @@ pub async fn update_io(
     })?;
 
     // ── Query 2b: Merge new Part relationships ──
+    // :Part nodes are per-SID shipment lines (merged on number+quantity+duns by
+    // upload_in_transit), not canonical parts — several trailers carry their own
+    // node for the same part number. Matching on number alone binds to every one
+    // of them and links this trailer to other trailers' lines, so resolve the
+    // part through this trailer's own SIDs instead.
     let add_parts_query = query("
         MATCH (t:Trailer {id: $trailer})
         UNWIND $parts AS part_number
-        MERGE (p:Part {number: part_number})
+        MATCH (t)-[:HAS_SID]->(:SID)-[:HAS_PART]->(p:Part {number: part_number})
         MERGE (t)-[:CONTAINS_PART]->(p)
     ")
     .param("trailer", update_io.Schedule.TrailerID.clone())
