@@ -1,7 +1,8 @@
 use crate::structs::*;
 use crate::auth::{Claims, LDAPUser};
-use rocket::{post, serde::json::Json, State};
+use rocket::{get, post, serde::json::Json, State};
 use rocket::http::{Cookie, CookieJar, SameSite};
+use rocket::response::Redirect;
 use neo4rs::query;
 use chrono::{Utc, Duration};
 use jsonwebtoken::{encode, Header, EncodingKey};
@@ -276,4 +277,85 @@ pub async fn sso_login(
     Ok(Json(LoginResponse {
         user: UserResponse { username: username.clone(), role },
     }))
+}
+
+// ── Azure AD (Entra ID) SSO ─────────────────────────────────────────────────
+// Browser-redirect flow, so these are GETs rather than the JSON POSTs the LDAP
+// path uses: /api/azure_login bounces out to Microsoft, Microsoft bounces back
+// to /api/azure_callback, and that callback is where the JWT cookies get set.
+
+const AZURE_STATE_COOKIE: &str = "azure_oauth_state";
+
+#[get("/api/azure_login")]
+pub async fn azure_login(jar: &CookieJar<'_>) -> Result<Redirect, (Status, Json<String>)> {
+    let state = uuid::Uuid::new_v4().to_string();
+
+    let url = crate::azure_auth::authorize_url(&state)
+        .map_err(|e| (Status::InternalServerError, Json(e.to_string())))?;
+
+    // Compared against the state Microsoft echoes back, which is what stops a
+    // forged callback. http-only so page scripts can't read or forge it.
+    let mut c = Cookie::new(AZURE_STATE_COOKIE, state);
+    c.set_http_only(true);
+    c.set_same_site(SameSite::Lax);
+    c.set_path("/");
+    if let Some(domain) = cookie_domain() {
+        c.set_domain(domain);
+    }
+    jar.add(c);
+
+    Ok(Redirect::to(url))
+}
+
+#[get("/api/azure_callback?<code>&<state>")]
+pub async fn azure_callback(
+    code:  String,
+    state: String,
+    jar:   &CookieJar<'_>,
+    app:   &State<AppState>,
+) -> Result<Redirect, (Status, Json<String>)> {
+    let expected = jar.get(AZURE_STATE_COOKIE).map(|c| c.value().to_string());
+
+    // One-shot — clear it whether or not the comparison succeeds.
+    let mut clear = Cookie::new(AZURE_STATE_COOKIE, "");
+    clear.set_path("/");
+    if let Some(domain) = cookie_domain() {
+        clear.set_domain(domain);
+    }
+    jar.remove(clear);
+
+    let azure_user = crate::azure_auth::complete_login(&code, &state, expected.as_deref())
+        .await
+        .map_err(|e| (Status::Unauthorized, Json(e.to_string())))?;
+
+    let username = azure_user.username;
+    let role     = azure_user.role;
+    let graph    = &app.graph;
+
+    // Same auto-provision as the LDAP path: role re-syncs on every login, the
+    // admin-managed fields only get defaults the first time.
+    graph.run(
+        query("
+            MERGE (u:User {name: $username})
+            ON CREATE SET u.first_name = '', u.position = '', u.shift = '', u.slack_id = ''
+            SET u.role = $role
+        ")
+        .param("username", username.clone())
+        .param("role",     role.clone()),
+    ).await.map_err(|e| (Status::InternalServerError, Json(e.to_string())))?;
+
+    let access_token = issue_access_token(&username, &role, &app.jwt_secret)
+        .map_err(|e| (Status::InternalServerError, Json(e.to_string())))?;
+
+    let refresh = uuid::Uuid::new_v4().to_string();
+    store_refresh_token(graph, &refresh, &username, &role).await
+        .map_err(|e| (Status::InternalServerError, Json(format!("Failed to store refresh token: {e}"))))?;
+
+    jar.add(make_cookie("f126f1b7d90a5bd5", access_token));
+    jar.add(make_cookie("738fadeef720a679", refresh));
+
+    // Back to the SPA. Cookies are set, but a full-page redirect leaves the
+    // frontend's user atom empty — it re-hydrates by calling /api/refresh,
+    // which returns the same LoginResponse the LDAP login does.
+    Ok(Redirect::to("/"))
 }

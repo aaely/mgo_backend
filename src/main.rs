@@ -11,6 +11,7 @@ mod helpers;
 mod emailer;
 mod services;
 mod ldap_auth;
+mod azure_auth;
 use rocket::data::ToByteUnit;
 use rocket::{get, routes};
 use rocket::fs::{FileServer, NamedFile};
@@ -144,6 +145,8 @@ async fn main() {
             get_scan_parts,
             login,
             sso_login,
+            azure_login,
+            azure_callback,
             update_user,
             get_lms,
             get_lms_by_route,

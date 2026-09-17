@@ -22,3 +22,16 @@ data:
   # Must start with a leading dot. Leave unset if you ever do get a single
   # shared hostname for both Routes.
   COOKIE_DOMAIN: ".apps.your-cluster.com"           # ← placeholder, set your real .apps domain
+  # ── Azure AD (Entra ID) SSO ──
+  # App Registration values. None of these are secret — the client secret lives
+  # in mgo-backend-secret. AZURE_REDIRECT_URI must match the Redirect URI
+  # registered on the app *exactly*, including scheme and path.
+  AZURE_TENANT_ID: "00000000-0000-0000-0000-000000000000"   # ← Directory (tenant) ID
+  AZURE_CLIENT_ID: "00000000-0000-0000-0000-000000000000"   # ← Application (client) ID
+  AZURE_REDIRECT_URI: "https://mgo-backend-7372268-test.apps.rtpfs-wpp2.wpp.nam.gm.com/api/azure_callback"
+  # Entra group Object IDs (GUIDs, not DNs) -> app role, same priority order as
+  # the LDAP_GROUP_* set above: admin > manager > floater > mfu.
+  AZURE_GROUP_ADMIN:   "00000000-0000-0000-0000-000000000000"
+  AZURE_GROUP_MANAGER: "00000000-0000-0000-0000-000000000000"
+  AZURE_GROUP_FLOATER: "00000000-0000-0000-0000-000000000000"
+  AZURE_GROUP_MFU:     "00000000-0000-0000-0000-000000000000"
