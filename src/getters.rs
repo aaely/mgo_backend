@@ -614,6 +614,10 @@ pub async fn get_past_shift(
                     editRef:           node.get("editRef").unwrap_or_default(),
                     door:              node.get("door").unwrap_or_default(),
                     doorArrivalTime:   node.get("doorArrivalTime").unwrap_or_default(),
+                    gateArrivalDate:   node.get("gateArrivalDate").unwrap_or_default(),
+                    doorArrivalDate:   node.get("doorArrivalDate").unwrap_or_default(),
+                    actualStartDate:   node.get("actualStartDate").unwrap_or_default(),
+                    actualEndDate:     node.get("actualEndDate").unwrap_or_default(),
                 });
             }
             if role.0.contains("univ") {
@@ -685,6 +689,10 @@ pub async fn get_live_trailers(
                     editRef:           String::new(),
                     door:              node.get("door").unwrap_or_default(),
                     doorArrivalTime:   node.get("doorArrivalTime").unwrap_or_default(),
+                    gateArrivalDate:   node.get("gateArrivalDate").unwrap_or_default(),
+                    doorArrivalDate:   node.get("doorArrivalDate").unwrap_or_default(),
+                    actualStartDate:   node.get("actualStartDate").unwrap_or_default(),
+                    actualEndDate:     node.get("actualEndDate").unwrap_or_default(),
                 });
             }
 
@@ -763,6 +771,10 @@ pub async fn get_staged_trailers(
                     editRef:           node.get("editRef").unwrap_or_default(),
                     door:              node.get("door").unwrap_or_default(),
                     doorArrivalTime:   node.get("doorArrivalTime").unwrap_or_default(),
+                    gateArrivalDate:   node.get("gateArrivalDate").unwrap_or_default(),
+                    doorArrivalDate:   node.get("doorArrivalDate").unwrap_or_default(),
+                    actualStartDate:   node.get("actualStartDate").unwrap_or_default(),
+                    actualEndDate:     node.get("actualEndDate").unwrap_or_default(),
                 });
             }
             if role.0.contains("univ") {

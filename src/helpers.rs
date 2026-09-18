@@ -199,6 +199,10 @@ pub fn build_update_query(role: &str, trailer: &TrailerRecord) -> neo4rs::Query 
     if is_admin || allowed.contains(&"gateArrivalTime")   { sets.push("t.gateArrivalTime = $gateArrivalTime") }
     if is_admin || allowed.contains(&"actualStartTime")   { sets.push("t.actualStartTime = $actualStartTime") }
     if is_admin || allowed.contains(&"actualEndTime")     { sets.push("t.actualEndTime = $actualEndTime") }
+    if is_admin || allowed.contains(&"gateArrivalDate")   { sets.push("t.gateArrivalDate = $gateArrivalDate") }
+    if is_admin || allowed.contains(&"doorArrivalDate")   { sets.push("t.doorArrivalDate = $doorArrivalDate") }
+    if is_admin || allowed.contains(&"actualStartDate")   { sets.push("t.actualStartDate = $actualStartDate") }
+    if is_admin || allowed.contains(&"actualEndDate")     { sets.push("t.actualEndDate = $actualEndDate") }
     if is_admin || allowed.contains(&"statusOX")          { sets.push("t.statusOX = $statusOX") }
     if is_admin || allowed.contains(&"stat")              { sets.push("t.stat = $stat") }
     if is_admin || allowed.contains(&"ryderComments")     { sets.push("t.ryderComments = $ryderComments") }
@@ -224,6 +228,10 @@ pub fn build_update_query(role: &str, trailer: &TrailerRecord) -> neo4rs::Query 
         .param("gateArrivalTime",   trailer.gateArrivalTime.clone())
         .param("actualStartTime",   trailer.actualStartTime.clone())
         .param("actualEndTime",     trailer.actualEndTime.clone())
+        .param("gateArrivalDate",   trailer.gateArrivalDate.clone())
+        .param("doorArrivalDate",   trailer.doorArrivalDate.clone())
+        .param("actualStartDate",   trailer.actualStartDate.clone())
+        .param("actualEndDate",     trailer.actualEndDate.clone())
         .param("statusOX",          trailer.statusOX.clone())
         .param("stat",              trailer.stat.clone())
         .param("ryderComments",     trailer.ryderComments.clone())
@@ -237,6 +245,7 @@ pub fn get_event_type(field: &str) -> &'static str {
         "hour" | "dockCode" | "scac" | "trailer1" | "trailer2" |
         "adjustedStartTime" | "scheduleEndDate" | "scheduleEndTime" |
         "gateArrivalTime" | "actualStartTime" | "actualEndTime" |
+        "gateArrivalDate" | "doorArrivalDate" | "actualStartDate" | "actualEndDate" |
         "statusOX" | "stat" | "ryderComments" | "gmComments" |
         "door" | "doorArrivalTime" | "LiveAdd" => "Trailer Updates",
         "shift_rolled"                          => "Shift Roll",

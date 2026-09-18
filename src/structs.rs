@@ -101,6 +101,11 @@ pub struct TrailerRecord {
     #[serde(default)] pub gateArrivalTime: String,
     #[serde(default)] pub actualStartTime: String,
     #[serde(default)] pub actualEndTime: String,
+    // Date half of each timestamp, so detention can span midnight correctly
+    #[serde(default)] pub gateArrivalDate: String,
+    #[serde(default)] pub doorArrivalDate: String,
+    #[serde(default)] pub actualStartDate: String,
+    #[serde(default)] pub actualEndDate: String,
     #[serde(default)] pub statusOX: String,
     #[serde(default)] pub stat: String,
     #[serde(default)] pub loadComments: String,
@@ -397,15 +402,17 @@ pub fn get_allowed_fields(role: &str) -> Option<Vec<&'static str>> {
     permissions.insert("supervisor", vec![
         "hour", "dockCode", "adjustedStartTime", "scheduleEndDate",
         "scheduleEndTime", "scac", "statusOX", "stat", "trailer1", "trailer2",
-        "gateArrivalTime", "actualStartTime", "actualEndTime", "door", "doorArrivalTime"
+        "gateArrivalTime", "actualStartTime", "actualEndTime", "door", "doorArrivalTime",
+        "gateArrivalDate", "doorArrivalDate", "actualStartDate", "actualEndDate"
     ]);
     permissions.insert("clerk", vec![
         "gateArrivalTime", "actualStartTime", "actualEndTime",
-        "door", "doorArrivalTime", "dockComments"
+        "door", "doorArrivalTime", "dockComments",
+        "gateArrivalDate", "doorArrivalDate", "actualStartDate", "actualEndDate"
     ]);
     permissions.insert("receiving", vec!["statusOX", "stat"]);
     permissions.insert("mfu", vec!["ryderComments"]);
-    permissions.insert("security", vec!["gateArrivalTime", "gmComments"]);
+    permissions.insert("security", vec!["gateArrivalTime", "gateArrivalDate", "gmComments"]);
 
     permissions.get(role).cloned()
 }

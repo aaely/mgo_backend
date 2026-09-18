@@ -884,7 +884,11 @@ pub async fn roll_next_shift(
             ryderComments:      t.ryderComments,
             gmComments:         t.gmComments,
             door:               t.door,
-            doorArrivalTime:    t.doorArrivalTime
+            doorArrivalTime:    t.doorArrivalTime,
+            gateArrivalDate:    t.gateArrivalDate,
+            doorArrivalDate:    t.doorArrivalDate,
+            actualStartDate:    t.actualStartDate,
+            actualEndDate:      t.actualEndDate
         })
         CREATE (o)-[:HAS_TRAILER]->(r)
     ")
@@ -926,7 +930,11 @@ pub async fn roll_next_shift(
             lowestDoh:         t.lowestDoh,
             loadComments:      t.loadComments,
             ryderComments:     t.ryderComments,
-            gmComments:        t.gmComments
+            gmComments:        t.gmComments,
+            gateArrivalDate:   t.gateArrivalDate,
+            doorArrivalDate:   t.doorArrivalDate,
+            actualStartDate:   t.actualStartDate,
+            actualEndDate:     t.actualEndDate
         })
     ");
 
@@ -1000,7 +1008,11 @@ pub async fn roll_next_shift(
             ryderComments:      s.ryderComments,
             gmComments:         s.gmComments,
             door:               '',
-            doorArrivalTime:    ''
+            doorArrivalTime:    '',
+            gateArrivalDate:    s.gateArrivalDate,
+            doorArrivalDate:    s.doorArrivalDate,
+            actualStartDate:    s.actualStartDate,
+            actualEndDate:      s.actualEndDate
         })
         DELETE s
     ");
@@ -1136,7 +1148,11 @@ pub async fn push_add_on (
             gmComments:        $gmComments,
             lowestDoh:         $lowestDoh,
             door:              $door,
-            doorArrivalTime:   $doorArrivalTime
+            doorArrivalTime:   $doorArrivalTime,
+            gateArrivalDate:   $gateArrivalDate,
+            doorArrivalDate:   $doorArrivalDate,
+            actualStartDate:   $actualStartDate,
+            actualEndDate:     $actualEndDate
         })
         RETURN t
     ")
@@ -1166,6 +1182,10 @@ pub async fn push_add_on (
     .param("loadComments",      add_on.loadComments.clone())
     .param("ryderComments",     add_on.ryderComments.clone())
     .param("gmComments",        add_on.gmComments.clone().unwrap_or_default())
+    .param("gateArrivalDate",   add_on.gateArrivalDate.clone())
+    .param("doorArrivalDate",   add_on.doorArrivalDate.clone())
+    .param("actualStartDate",   add_on.actualStartDate.clone())
+    .param("actualEndDate",     add_on.actualEndDate.clone())
     .param("lowestDoh",         add_on.lowestDoh.clone().unwrap_or_default())
     .param("door",              add_on.door.clone())
     .param("doorArrivalTime",   add_on.doorArrivalTime.clone());
@@ -1208,6 +1228,10 @@ pub async fn push_add_on (
                     editRef:           String::new(),
                     door:              node.get("door").unwrap_or_default(),
                     doorArrivalTime:   node.get("doorArrivalTime").unwrap_or_default(),
+                    gateArrivalDate:   node.get("gateArrivalDate").unwrap_or_default(),
+                    doorArrivalDate:   node.get("doorArrivalDate").unwrap_or_default(),
+                    actualStartDate:   node.get("actualStartDate").unwrap_or_default(),
+                    actualEndDate:     node.get("actualEndDate").unwrap_or_default(),
                 };
 
                 // ── Broadcast without editRef (editRefs are per-user, not shared) ──
@@ -1326,7 +1350,11 @@ pub async fn upload_on_deck(
             ryderComments: $ryderComments,
             gmComments: $gmComments,
             door: '',
-            doorArrivalTime: ''
+            doorArrivalTime: '',
+            gateArrivalDate: $gateArrivalDate,
+            doorArrivalDate: $doorArrivalDate,
+            actualStartDate: $actualStartDate,
+            actualEndDate: $actualEndDate
         })
         RETURN t
     ")
@@ -1357,6 +1385,10 @@ pub async fn upload_on_deck(
     .param("loadComments", line.loadComments.clone())
     .param("ryderComments", line.ryderComments.clone())
     .param("gmComments", line.gmComments.clone())
+    .param("gateArrivalDate", line.gateArrivalDate.clone())
+    .param("doorArrivalDate", line.doorArrivalDate.clone())
+    .param("actualStartDate", line.actualStartDate.clone())
+    .param("actualEndDate", line.actualEndDate.clone())
     .param("uuid", line.uuid.clone());
 
         match graph.execute(query).await {
@@ -1432,6 +1464,10 @@ pub async fn upload_on_deck(
                         editRef,
                         door:            String::new(),
                         doorArrivalTime: String::new(),
+                        gateArrivalDate: trailer_node.get("gateArrivalDate").unwrap_or_default(),
+                        doorArrivalDate: trailer_node.get("doorArrivalDate").unwrap_or_default(),
+                        actualStartDate: trailer_node.get("actualStartDate").unwrap_or_default(),
+                        actualEndDate:   trailer_node.get("actualEndDate").unwrap_or_default(),
                     };
                     // ── Audit trail: log initial field values on creation ──
                     let audit_timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -1661,6 +1697,10 @@ pub async fn update_live_trailer(
                     editRef:           String::new(),
                     door:              node.get("door").unwrap_or_default(),
                     doorArrivalTime:   node.get("doorArrivalTime").unwrap_or_default(),
+                    gateArrivalDate:   node.get("gateArrivalDate").unwrap_or_default(),
+                    doorArrivalDate:   node.get("doorArrivalDate").unwrap_or_default(),
+                    actualStartDate:   node.get("actualStartDate").unwrap_or_default(),
+                    actualEndDate:     node.get("actualEndDate").unwrap_or_default(),
                 };
                 // ── Broadcast without editRef (per-user, not shareable) ──
                 if let Ok(data) = serde_json::to_value(&updated) {
@@ -2283,6 +2323,38 @@ pub async fn upload_part_route(
         })?;
     }
 
+    // ── Backfill IO parts missing from the uploaded report ──
+    // Temporary: some IO parts don't appear in the PartRoute report yet (being
+    // investigated upstream). Rebuild them from PartASL + PartASN so they
+    // aren't invisible downstream. Route comes from the ASN dock — 'V' ->
+    // ARIOVAA, 'U' -> ARIOUUU, V winning if a dock somehow contains both.
+    // Parts with no ASN row, or a dock with neither letter, are left alone.
+    // Placed before the Route -> Duns step so these get their edges too.
+    let backfill_query = query("
+        MATCH (asl:PartASL)
+        OPTIONAL MATCH (pr:PartRoute {part: asl.part})
+        WITH asl, pr
+        WHERE pr IS NULL
+        MATCH (asn:PartASN {part: asl.part})
+        WITH asl, head(collect(asn)) AS asn
+        WITH asl, asn, CASE
+            WHEN asn.dock CONTAINS 'V' THEN 'ARIOVAA'
+            WHEN asn.dock CONTAINS 'U' THEN 'ARIOUUU'
+            ELSE null
+        END AS route
+        WHERE route IS NOT NULL
+        MERGE (n:PartRoute {part: asl.part, duns: asl.duns})
+        SET n.route   = route,
+            n.desc    = asl.desc,
+            n.deck    = asl.deck,
+            n.dock    = asn.dock,
+            n.country = asn.country
+    ");
+    graph.run(backfill_query).await.map_err(|e| {
+        eprintln!("Failed to backfill PartRoute from PartASL: {:?}", e);
+        Json("Failed to backfill PartRoute from PartASL")
+    })?;
+
     // ── Link Route -> Duns (Duns already links to Contact via update_contact) ──
     let route_duns_query = query("
         MATCH (p:PartRoute)
@@ -2521,7 +2593,11 @@ pub async fn push_reschedules(
                 lowestDoh:         $lowestDoh,
                 loadComments:      $loadComments,
                 ryderComments:     $ryderComments,
-                gmComments:        $gmComments
+                gmComments:        $gmComments,
+                gateArrivalDate:   $gateArrivalDate,
+                doorArrivalDate:   $doorArrivalDate,
+                actualStartDate:   $actualStartDate,
+                actualEndDate:     $actualEndDate
             })
         ")
         .param("uuid",              line.uuid.clone())
@@ -2550,7 +2626,11 @@ pub async fn push_reschedules(
         .param("lowestDoh",         line.lowestDoh.clone())
         .param("loadComments",      line.loadComments.clone())
         .param("ryderComments",     line.ryderComments.clone())
-        .param("gmComments",        line.gmComments.clone().unwrap_or_default());
+        .param("gmComments",        line.gmComments.clone().unwrap_or_default())
+        .param("gateArrivalDate",   line.gateArrivalDate.clone())
+        .param("doorArrivalDate",   line.doorArrivalDate.clone())
+        .param("actualStartDate",   line.actualStartDate.clone())
+        .param("actualEndDate",     line.actualEndDate.clone());
 
         graph.run(q).await.map_err(|e| {
             eprintln!("Failed to create rescheduled trailer: {:?}", e);
