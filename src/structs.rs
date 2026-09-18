@@ -228,6 +228,11 @@ pub struct DeliveredTrailer {
 }
 
 #[derive(Deserialize, Serialize)]
+pub struct UnscheduleIoRequest {
+    pub trailer: String,
+}
+
+#[derive(Deserialize, Serialize)]
 pub struct DeliveryRequest {
     pub trailer_id: String,
     /// Operator-confirmed YYYY-MM-DD; empty falls back to today for older callers.

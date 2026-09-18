@@ -317,8 +317,51 @@ pub async fn upload_in_transit(
 ) -> Result<Json<&'static str>, Json<&'static str>> {
     let graph = &state.graph;
 
+    // ── Drop trailers already delivered in the last month ──
+    // The GMAP report keeps listing containers after they arrive, so anything with a
+    // recent DeliveredTrailer record is skipped rather than rebuilt from the report.
+    // delivery_date is stored as YYYY-MM-DD, so it compares correctly as text.
+    let cutoff = (chrono::Utc::now() - chrono::Duration::days(30))
+        .format("%Y-%m-%d")
+        .to_string();
+
+    let delivered_q = query("
+        MATCH (d:DeliveredTrailer)
+        WHERE d.delivery_date >= $cutoff
+        RETURN collect(DISTINCT d.trailer_id) AS trailers
+    ")
+    .param("cutoff", cutoff.clone());
+
+    let delivered: std::collections::HashSet<String> = match graph.execute(delivered_q).await {
+        Ok(mut result) => match result.next().await {
+            Ok(Some(row)) => row
+                .get::<Vec<String>>("trailers")
+                .unwrap_or_default()
+                .into_iter()
+                .collect(),
+            _ => std::collections::HashSet::new(),
+        },
+        Err(e) => {
+            eprintln!("Failed to load recently delivered trailers: {:?}", e);
+            std::collections::HashSet::new()
+        }
+    };
+
+    // Filter once up front so Schedule nodes aren't created for skipped trailers either
+    let lines: Vec<&InTransit> = upload_in_transit
+        .iter()
+        .filter(|l| !delivered.contains(&l.trailer))
+        .collect();
+
+    println!(
+        "upload_in_transit: {} lines in, {} skipped as delivered since {}",
+        upload_in_transit.len(),
+        upload_in_transit.len() - lines.len(),
+        cutoff
+    );
+
     // ── Query 1: Build Trailer → SID → Part graph ──
-    for line in upload_in_transit.iter() {
+    for line in lines.iter() {
         let query = query("
             MERGE (trailer:Trailer {id: $trailer})
             MERGE (sid:SID {id: $sid, ciscoID: $cisco})
@@ -344,7 +387,7 @@ pub async fn upload_in_transit(
     // A trailer's SIDs can ship on different days, so its Schedule keeps the earliest
     // non-blank ship date (YYYY-MM-DD compares correctly as text)
     let mut trailer_destinations: std::collections::HashMap<String, (String, String, String, String)> = std::collections::HashMap::new();
-    for line in upload_in_transit.iter() {
+    for line in lines.iter() {
         let entry = trailer_destinations
             .entry(line.trailer.clone())
             .or_insert_with(|| (line.destination.clone(), line.supplier.clone(), line.location.clone(), String::new()));
@@ -2745,4 +2788,51 @@ pub async fn send_rescheduled_slack(
         .map_err(|_| Json("Slack request failed"))?;
 
     Ok(Json("ok"))
+}
+/// Unscheduling an IO trailer retires its exception log entry. Archived first,
+/// matching how push_reschedules retires DyComm and Exception entries — dock is
+/// deliberately not part of the match, since a destination change would alter it
+/// and orphan the entry.
+#[post("/api/unschedule_io", format = "json", data = "<req>")]
+pub async fn unschedule_io(
+    req:   Json<UnscheduleIoRequest>,
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+) -> Result<Json<&'static str>, Json<&'static str>> {
+    let graph = &state.graph;
+
+    let archive_q = query("
+        MATCH (e:ExceptionLogEntry {loadNum: 'IO', trailer1: $trailer1})
+        CREATE (a:ArchivedExceptions {
+            loadNum:      e.loadNum,
+            dock:         e.dock,
+            type:         e.type,
+            status:       e.status,
+            route:        e.route,
+            scac:         e.scac,
+            trailer1:     e.trailer1,
+            trailer2:     e.trailer2,
+            supplier:     e.supplier,
+            dockSequence: e.dockSequence,
+            originalDate: e.originalDate,
+            originalTime: e.originalTime,
+            newDate:      e.newDate,
+            newTime:      e.newTime,
+            newEndDate:   e.newEndDate,
+            newEndTime:   e.newEndTime,
+            comment:        e.comment,
+            requestor:      e.requestor,
+            isRepower:      e.isRepower,
+            repowerLoadNum: e.repowerLoadNum
+        })
+        DELETE e
+    ")
+    .param("trailer1", req.trailer.clone());
+
+    graph.run(archive_q).await.map_err(|e| {
+        eprintln!("Failed to retire exception entry for {}: {:?}", req.trailer, e);
+        Json("Failed to retire exception entry")
+    })?;
+
+    Ok(Json("Exception entry retired"))
 }
