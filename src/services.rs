@@ -453,10 +453,19 @@ pub async fn part_monitoring_service(
                     .map(|arrival| (current_downtime_dt - arrival).num_minutes() as f64 / 60.0);
                 let hours_until_rescue = rescue_margin.unwrap_or(0.0);
 
-                // Only alert if the part is actually at risk: the eventual outage
-                // is close (<=6h) OR the ASN saving from the current outage only
-                // cleared it by a thin margin (<=6h). Drop entirely otherwise.
-                let level = worse_level(classify(final_hours_to_out), rescue_margin.and_then(classify));
+                // With no ASN there is nothing that can prevent the outage the
+                // burn just projected — it's a certainty, not a risk, so the
+                // <=6h thresholds don't apply. Reaching here already means the
+                // balance runs out inside the 48h window.
+                //
+                // Otherwise: alert if the eventual outage is close (<=6h) OR the
+                // ASN saving from the current outage cleared it by only a thin
+                // margin (<=6h). Drop entirely otherwise.
+                let level = if asns_for_part.is_empty() {
+                    Some("Shut Down")
+                } else {
+                    worse_level(classify(final_hours_to_out), rescue_margin.and_then(classify))
+                };
 
                 if let Some(level) = level {
                     dispatch_alert(
