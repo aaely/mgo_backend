@@ -168,6 +168,12 @@ async fn handle_connection<S>(
                                     "multi_trailer_update" => {
                                         println!("Handling multi_trailer_update: {:?}", incoming_message.data);
                                     }
+                                    // Schedule builder state sync. The payload carries the whole
+                                    // in-progress schedule, so it is relayed unlogged; only the
+                                    // clients on that page act on it.
+                                    "schedule_broadcast" => {
+                                        println!("Handling schedule_broadcast from {}", peer_addr);
+                                    }
                                     _ => {
                                         println!("Unknown event type: {:?}", incoming_message.r#type);
                                     }

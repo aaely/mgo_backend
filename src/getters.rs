@@ -231,9 +231,12 @@ pub async fn get_io(
         MATCH (t:Trailer)-[:HAS_SCHEDULE]->(s:Schedule)
         WITH t, s
         MATCH (t)-[:HAS_SID]->(sid:SID)
-        WITH t, s, COLLECT(DISTINCT sid.id) AS sids
+        OPTIONAL MATCH (sid)-[:HAS_PART]->(sp:Part)
+        WITH t, s,
+             COLLECT(DISTINCT sid.id) AS sids,
+             [x IN COLLECT(DISTINCT {sid: sid.id, part: sp.number, quantity: toInteger(coalesce(sp.quantity, 0))}) WHERE x.part IS NOT NULL] AS sidParts
         MATCH (t)-[:CONTAINS_PART]->(p:Part)
-        RETURN t.id AS trailer, s, sids,
+        RETURN t.id AS trailer, s, sids, sidParts,
                COLLECT(DISTINCT p.number) AS parts,
                COLLECT(DISTINCT {part: p.number, quantity: toInteger(coalesce(p.quantity, 0)), scheduleDate: s.ScheduleDate}) AS partQtys
     ");
@@ -281,12 +284,15 @@ pub async fn get_io(
                     });
                 // Quantities live on the Part nodes; the running balance needs them
                 let part_qtys = record.get::<Vec<PartQty>>("partQtys").unwrap_or_default();
+                // Pairing of part to SID, which the flat Sids/Parts lists can't carry
+                let sid_parts = record.get::<Vec<SidPart>>("sidParts").unwrap_or_default();
                 let d = IOResponse {
                     Trailer: trailer,
                     Schedule: s,
                     Sids: sids,
                     Parts: parts,
                     PartQtys: part_qtys,
+                    SidParts: Some(sid_parts),
                 };
                 data.push(d);
             }

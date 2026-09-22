@@ -23,7 +23,7 @@ pub async fn update_io(
             t.id           = $new_trailer,
             s.TrailerID    = $new_trailer,
             s.Comments     = $comments,
-            s.Destination  = $destination,
+            s.Destination  = s.Destination,
             s.OriginalDate = $original_date,
             s.ScheduleDate = $schedule_date,
             s.ScheduleTime = $schedule_time,
@@ -113,6 +113,77 @@ pub async fn update_io(
         Json("Failed to add sids")
     })?;
 
+    // ── Query 3c/3d/3e: Reconcile which part hangs off which SID ──
+    // Only when the caller sent the field — see IOResponse::SidParts
+    if let Some(sid_parts) = update_io.SidParts.as_ref() {
+        // Sent as parallel arrays rather than a list of maps: neo4rs 0.7 params take
+        // primitives and lists of primitives, so the rows are zipped back by index.
+        let sp_sids: Vec<String> = sid_parts.iter().map(|r| r.sid.clone()).collect();
+        let sp_parts: Vec<String> = sid_parts.iter().map(|r| r.part.clone()).collect();
+        let sp_qtys: Vec<i64> = sid_parts.iter().map(|r| r.quantity).collect();
+        // Keys let the sweep below spot a pairing that was removed in the form
+        let sp_keys: Vec<String> = sid_parts.iter()
+            .map(|r| format!("{}|{}", r.sid, r.part))
+            .collect();
+
+        // Drop pairings the operator removed
+        let remove_sid_parts = query("
+            MATCH (t:Trailer {id: $trailer})-[:HAS_SID]->(sid:SID)-[r:HAS_PART]->(p:Part)
+            WHERE NOT (sid.id + '|' + p.number) IN $keys
+            DELETE r
+        ")
+        .param("trailer", update_io.Schedule.TrailerID.clone())
+        .param("keys",    sp_keys.clone());
+
+        graph.run(remove_sid_parts).await.map_err(|e| {
+            eprintln!("Failed to remove stale sid/part links: {:?}", e);
+            Json("Failed to remove stale sid/part links")
+        })?;
+
+        // Attach each part to its SID at the requested quantity.
+        // :Part nodes are merged on {number, quantity, duns}, so quantity is part of
+        // the node's identity — SET-ing it would silently rewrite the quantity for
+        // every other trailer sharing that node. Instead the edge is re-pointed at
+        // the node carrying the wanted quantity, keeping duns from the old line.
+        let upsert_sid_parts = query("
+            MATCH (t:Trailer {id: $trailer})
+            UNWIND range(0, size($sids) - 1) AS i
+            WITH t, $sids[i] AS sidId, $parts[i] AS partNum, $qtys[i] AS qty
+            MATCH (t)-[:HAS_SID]->(sid:SID {id: sidId})
+            OPTIONAL MATCH (sid)-[r:HAS_PART]->(old:Part {number: partNum})
+            WITH t, sid, partNum, qty, r, coalesce(old.duns, '') AS duns
+            DELETE r
+            MERGE (p:Part {number: partNum, quantity: toInteger(qty), duns: duns})
+            MERGE (sid)-[:HAS_PART]->(p)
+            MERGE (t)-[:CONTAINS_PART]->(p)
+        ")
+        .param("trailer", update_io.Schedule.TrailerID.clone())
+        .param("sids",    sp_sids.clone())
+        .param("parts",   sp_parts.clone())
+        .param("qtys",    sp_qtys.clone());
+
+        graph.run(upsert_sid_parts).await.map_err(|e| {
+            eprintln!("Failed to attach sid parts: {:?}", e);
+            Json("Failed to attach sid parts")
+        })?;
+
+        // Re-pointing an edge can strand the old quantity's node. Scoped to the part
+        // numbers just touched rather than sweeping every :Part in the graph.
+        let sweep_orphans = query("
+            UNWIND $parts AS partNum
+            MATCH (p:Part {number: partNum})
+            WHERE NOT (:SID)-[:HAS_PART]->(p)
+              AND NOT (:Trailer)-[:CONTAINS_PART]->(p)
+            DETACH DELETE p
+        ")
+        .param("parts", sp_parts.clone());
+
+        graph.run(sweep_orphans).await.map_err(|e| {
+            eprintln!("Failed to sweep orphaned parts: {:?}", e);
+            Json("Failed to sweep orphaned parts")
+        })?;
+    }
+
     // ── Query 4: Fetch and return updated IOResponse ──
     let fetch_query = query("
         MATCH (t:Trailer {id: $trailer})-[:HAS_SCHEDULE]->(s:Schedule)
@@ -157,6 +228,7 @@ pub async fn update_io(
                     // The page refetches get_io after an edit, so this response
                     // doesn't need to carry quantities
                     PartQtys: Vec::new(),
+                    SidParts: None,
                 }))
             } else {
                 Err(Json("No matching trailer found"))
@@ -2915,4 +2987,64 @@ pub async fn unschedule_io(
     })?;
 
     Ok(Json("Exception entry retired"))
+}
+
+/// Remove an IO trailer along with its schedule, SIDs and parts.
+///
+/// SID nodes are merged on {id, ciscoID} and Part nodes on {number, quantity, duns},
+/// so both are shared across trailers — deleting them outright would strip nodes
+/// other trailers still reference. The trailer and its schedule go unconditionally;
+/// SIDs and parts are only removed once nothing points at them any more.
+#[post("/api/delete_io_trailer", format = "json", data = "<req>")]
+pub async fn delete_io_trailer(
+    req:   Json<DeleteIoTrailerRequest>,
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+    role:  Role,
+) -> Result<Json<&'static str>, Json<&'static str>> {
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err(Json("Forbidden"));
+    }
+
+    let graph = &state.graph;
+
+    // ── Trailer + its Schedule ──
+    let delete_trailer = query("
+        MATCH (t:Trailer {id: $trailer})
+        OPTIONAL MATCH (t)-[:HAS_SCHEDULE]->(s:Schedule)
+        DETACH DELETE s, t
+    ")
+    .param("trailer", req.trailer.clone());
+
+    graph.run(delete_trailer).await.map_err(|e| {
+        eprintln!("Failed to delete IO trailer {}: {:?}", req.trailer, e);
+        Json("Failed to delete trailer")
+    })?;
+
+    // ── SIDs no trailer references any more ──
+    let orphan_sids = query("
+        MATCH (sid:SID)
+        WHERE NOT (:Trailer)-[:HAS_SID]->(sid)
+        DETACH DELETE sid
+    ");
+
+    graph.run(orphan_sids).await.map_err(|e| {
+        eprintln!("Failed to clear orphaned SIDs: {:?}", e);
+        Json("Failed to clear orphaned SIDs")
+    })?;
+
+    // ── Parts no SID or trailer references any more ──
+    let orphan_parts = query("
+        MATCH (p:Part)
+        WHERE NOT (:SID)-[:HAS_PART]->(p)
+          AND NOT (:Trailer)-[:CONTAINS_PART]->(p)
+        DETACH DELETE p
+    ");
+
+    graph.run(orphan_parts).await.map_err(|e| {
+        eprintln!("Failed to clear orphaned parts: {:?}", e);
+        Json("Failed to clear orphaned parts")
+    })?;
+
+    Ok(Json("Trailer deleted"))
 }

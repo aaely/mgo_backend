@@ -196,6 +196,7 @@ async fn main() {
             get_exceptions,
             upload_exception,
             unschedule_io,
+            delete_io_trailer,
             delivered,
             upload_dycomm,
             upload_in_transit,

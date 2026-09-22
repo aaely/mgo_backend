@@ -54,7 +54,7 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo 'fn main() {}' > src/main.rs
 RUN cargo build --release
-RUN rm -f target/release/deps/rocket_http*
+RUN rm -f target/release/deps/modms*
 
 COPY src ./src
 RUN cargo build --release

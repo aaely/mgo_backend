@@ -67,6 +67,18 @@ pub struct PartQty {
     #[serde(default)] pub scheduleDate: String,
 }
 
+/// One (sid)-[:HAS_PART]->(part) link with its quantity.
+///
+/// Kept flat rather than nesting parts inside each SID: neo4rs decodes a list of
+/// maps into Vec<T> (as PartQtys already does), but a list of maps each holding
+/// another list is not a shape it handles. The frontend groups these by `sid`.
+#[derive(Serialize, Deserialize, PartialEq, Default, Debug, Clone)]
+pub struct SidPart {
+    pub sid:      String,
+    pub part:     String,
+    pub quantity: i64,
+}
+
 #[derive(Serialize, Deserialize, PartialEq, Default, Debug)]
 pub struct IOResponse {
     pub Trailer: String,
@@ -75,6 +87,14 @@ pub struct IOResponse {
     pub Parts: Vec<String>,
     /// Same parts as `Parts`, carrying the quantity the running balance needs
     #[serde(default)] pub PartQtys: Vec<PartQty>,
+    /// Which part belongs to which SID, and in what quantity. `Parts` and `Sids`
+    /// are independent flat lists and can't express the pairing.
+    ///
+    /// Option, not a plain Vec: update_io treats this as the desired set and drops
+    /// any pairing missing from it. Callers that don't edit parts (the schedule and
+    /// confirm screens) omit the field, and `None` means "leave the pairings alone"
+    /// — with a defaulted empty Vec those saves would wipe every part off the trailer.
+    #[serde(default)] pub SidParts: Option<Vec<SidPart>>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Default, Debug)]
@@ -234,6 +254,11 @@ pub struct DeliveredTrailer {
 
 #[derive(Deserialize, Serialize)]
 pub struct UnscheduleIoRequest {
+    pub trailer: String,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct DeleteIoTrailerRequest {
     pub trailer: String,
 }
 

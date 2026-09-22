@@ -7,7 +7,7 @@ if [ -d /usr/local/share/ca-certificates/custom ] && [ -n "$(ls -A /usr/local/sh
 fi
 
 if [ "$USE_HTTPS" = "true" ]; then
-    exec ./rocket_http --https
+    exec ./modms --https
 else
-    exec ./rocket_http
+    exec ./modms
 fi
