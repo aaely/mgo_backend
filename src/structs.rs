@@ -252,6 +252,20 @@ pub struct DeliveredTrailer {
     pub Sids:         Vec<String>,
 }
 
+/// A no-show is logged, not completed: unlike DeliveredTrailer this is written
+/// alongside a Trailer that stays in the active pool, so the same trailer can
+/// accumulate one of these per date it fails to arrive.
+#[derive(Debug, Serialize, Deserialize, Default, PartialEq)]
+pub struct NoShowTrailer {
+    pub TrailerID:  String,
+    pub NoShowDate: String,
+    pub Schedule:   Schedule,
+    pub Parts:      Vec<String>,
+    pub Sids:       Vec<String>,
+    pub RecordedBy: String,
+    pub RecordedAt: String,
+}
+
 #[derive(Deserialize, Serialize)]
 pub struct UnscheduleIoRequest {
     pub trailer: String,
@@ -267,6 +281,13 @@ pub struct DeliveryRequest {
     pub trailer_id: String,
     /// Operator-confirmed YYYY-MM-DD; empty falls back to today for older callers.
     #[serde(default)] pub delivery_date: String,
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct NoShowRequest {
+    pub trailer_id: String,
+    /// Operator-confirmed YYYY-MM-DD; empty falls back to today.
+    #[serde(default)] pub no_show_date: String,
 }
 
 

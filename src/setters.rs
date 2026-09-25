@@ -903,6 +903,144 @@ pub async fn delivered(
     Ok(Json(delivered))
 }
 
+/// Mirrors `delivered`, with the one difference that makes it a no-show: the
+/// Trailer, Schedule, SIDs and Parts are left untouched in the active pool, so
+/// the container stays on the IO schedule and can still be rescheduled. All this
+/// writes is the snapshot.
+#[post("/api/no_show", format = "json", data="<req>")]
+pub async fn no_show(
+    req: Json<NoShowRequest>,
+    state: &State<AppState>,
+    user: AuthenticatedUser,
+    _role: Role,
+) -> Result<Json<NoShowTrailer>, Json<&'static str>> {
+
+    let graph = &state.graph;
+
+    let no_show_date = if req.no_show_date.trim().is_empty() {
+        chrono::Utc::now().format("%Y-%m-%d").to_string()
+    } else {
+        chrono::NaiveDate::parse_from_str(req.no_show_date.trim(), "%Y-%m-%d")
+            .map_err(|_| Json("Invalid no_show_date; expected YYYY-MM-DD"))?
+            .format("%Y-%m-%d")
+            .to_string()
+    };
+
+    // ── Query 1: Fetch schedule, parts, and sids for the trailer ──
+    let fetch_query = query("
+        MATCH (t:Trailer {id: $trailer})-[:HAS_SCHEDULE]->(s:Schedule)
+        OPTIONAL MATCH (t)-[:CONTAINS_PART]->(p:Part)
+        OPTIONAL MATCH (t)-[:HAS_SID]->(sid:SID)
+        RETURN t.id AS trailer, s, COLLECT(DISTINCT p.number) AS parts, COLLECT(DISTINCT sid.id) AS sids
+    ")
+    .param("trailer", req.trailer_id.clone());
+
+    let (schedule, parts, sids) = match graph.execute(fetch_query).await {
+        Ok(mut result) => {
+            if let Ok(Some(row)) = result.next().await {
+                let schedule_node: Node = row.get("s").map_err(|_| Json("Failed to get schedule node"))?;
+
+                let schedule = Schedule {
+                    Comments:     schedule_node.get("Comments").unwrap_or_default(),
+                    Scac:         schedule_node.get("Scac").unwrap_or_default(),
+                    Destination:  schedule_node.get("Destination").unwrap_or_default(),
+                    OriginalDate: schedule_node.get("OriginalDate").unwrap_or_default(),
+                    ScheduleDate: schedule_node.get("ScheduleDate").unwrap_or_default(),
+                    ScheduleTime: schedule_node.get("ScheduleTime").unwrap_or_default(),
+                    TrailerID:    schedule_node.get("TrailerID").unwrap_or_default(),
+                    Status:       schedule_node.get("Status").unwrap_or_default(),
+                    Supplier:     schedule_node.get("Supplier").unwrap_or_default(),
+                    Location:     schedule_node.get("Location").unwrap_or_default(),
+                    CarrierEmail: schedule_node.get("CarrierEmail").unwrap_or_default(),
+                    ShipDate:     schedule_node.get("ShipDate").unwrap_or_default(),
+                };
+
+                let parts: Vec<String> = row.get("parts").unwrap_or_else(|_| Vec::new());
+                let sids: Vec<String>  = row.get("sids").unwrap_or_else(|_| Vec::new());
+
+                (schedule, parts, sids)
+            } else {
+                return Err(Json("No matching trailer found"));
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to fetch trailer: {:?}", e);
+            return Err(Json("Failed to fetch trailer"));
+        }
+    };
+
+    // ── Query 2: Merge NoShowTrailer snapshot ──
+    // Keyed on trailer + date, so re-clicking the same day overwrites rather than
+    // piling up duplicates, while a second no-show on a later date logs separately.
+    // ScheduledStatus keeps what the schedule said at the time; the live Schedule
+    // node is deliberately not touched.
+    let recorded_at = chrono::Utc::now().to_rfc3339();
+    let no_show_query = query("
+        MERGE (n:NoShowTrailer {trailer_id: $trailer, no_show_date: $no_show_date})
+        SET
+            n.Comments        = $comments,
+            n.Destination     = $destination,
+            n.OriginalDate    = $original_date,
+            n.ScheduleDate    = $schedule_date,
+            n.ScheduleTime    = $schedule_time,
+            n.Status          = 'No Show',
+            n.ScheduledStatus = $scheduled_status,
+            n.Supplier        = $supplier,
+            n.Scac            = $scac,
+            n.Location        = $location,
+            n.CarrierEmail    = $carrier_email,
+            n.ShipDate        = $ship_date,
+            n.parts           = $parts,
+            n.sids            = $sids,
+            n.recorded_by     = $recorded_by,
+            n.recorded_at     = $recorded_at
+        RETURN n
+    ")
+    .param("trailer",          req.trailer_id.clone())
+    .param("no_show_date",     no_show_date.clone())
+    .param("comments",         schedule.Comments.clone())
+    .param("destination",      schedule.Destination.clone())
+    .param("original_date",    schedule.OriginalDate.clone())
+    .param("schedule_date",    schedule.ScheduleDate.clone())
+    .param("schedule_time",    schedule.ScheduleTime.clone())
+    .param("scheduled_status", schedule.Status.clone())
+    .param("supplier",         schedule.Supplier.clone())
+    .param("scac",             schedule.Scac.clone())
+    .param("location",         schedule.Location.clone())
+    .param("carrier_email",    schedule.CarrierEmail.clone())
+    .param("ship_date",        schedule.ShipDate.clone())
+    .param("parts",            parts.clone())
+    .param("sids",             sids.clone())
+    .param("recorded_by",      user.0.username.clone())
+    .param("recorded_at",      recorded_at.clone());
+
+    let no_show = match graph.execute(no_show_query).await {
+        Ok(mut result) => {
+            if let Ok(Some(row)) = result.next().await {
+                let node: Node = row.get("n").map_err(|_| Json("Failed to get no-show node"))?;
+
+                NoShowTrailer {
+                    TrailerID:  node.get("trailer_id").unwrap_or_default(),
+                    NoShowDate: node.get("no_show_date").unwrap_or_default(),
+                    Schedule:   schedule,
+                    Parts:      parts,
+                    Sids:       sids,
+                    RecordedBy: node.get("recorded_by").unwrap_or_default(),
+                    RecordedAt: node.get("recorded_at").unwrap_or_default(),
+                }
+            } else {
+                return Err(Json("Failed to create no-show record"));
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to record no-show: {:?}", e);
+            return Err(Json("Failed to record no-show"));
+        }
+    };
+
+    Ok(Json(no_show))
+}
+
 #[post("/api/roll_next_shift", format = "json", data = "<req>")]
 pub async fn roll_next_shift(
     req:    Json<RollNextShiftRequest>,
