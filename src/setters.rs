@@ -23,7 +23,7 @@ pub async fn update_io(
             t.id           = $new_trailer,
             s.TrailerID    = $new_trailer,
             s.Comments     = $comments,
-            s.Destination  = s.Destination,
+            s.Destination  = $destination,
             s.OriginalDate = $original_date,
             s.ScheduleDate = $schedule_date,
             s.ScheduleTime = $schedule_time,
@@ -474,7 +474,7 @@ pub async fn upload_in_transit(
             MERGE (trailer)-[:HAS_SCHEDULE]->(s:Schedule)
             ON CREATE SET
                 s.TrailerID    = trailer.id,
-                s.Destination  = $destination,
+                s.Destination  = s.Destination,
                 s.Supplier     = $supplier,
                 s.OriginalDate = '',
                 s.ScheduleDate = '',

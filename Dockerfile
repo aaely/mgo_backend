@@ -73,7 +73,7 @@ RUN mkdir -p /usr/local/share/ca-certificates/custom && \
 
 WORKDIR /app
 
-COPY --from=builder /app/target/release/rocket_http .
+COPY --from=builder /app/target/release/modms .
 COPY docker-entrypoint.sh .
 RUN chmod +x docker-entrypoint.sh
 
