@@ -235,7 +235,7 @@ pub async fn get_io(
         WITH t, s,
              COLLECT(DISTINCT sid.id) AS sids,
              [x IN COLLECT(DISTINCT {sid: sid.id, part: sp.number, quantity: toInteger(coalesce(sp.quantity, 0))}) WHERE x.part IS NOT NULL] AS sidParts
-        MATCH (t)-[:CONTAINS_PART]->(p:Part)
+        OPTIONAL MATCH (t)-[:CONTAINS_PART]->(p:Part)
         RETURN t.id AS trailer, s, sids, sidParts,
                COLLECT(DISTINCT p.number) AS parts,
                COLLECT(DISTINCT {part: p.number, quantity: toInteger(coalesce(p.quantity, 0)), scheduleDate: s.ScheduleDate}) AS partQtys

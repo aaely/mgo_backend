@@ -153,8 +153,7 @@ pub async fn update_io(
             OPTIONAL MATCH (sid)-[r:HAS_PART]->(old:Part {number: partNum})
             WITH t, sid, partNum, qty, r, coalesce(old.duns, '') AS duns
             DELETE r
-            MERGE (p:Part {number: partNum, quantity: toInteger(qty), duns: duns})
-            MERGE (sid)-[:HAS_PART]->(p)
+            MERGE (sid)-[:HAS_PART]->(p:Part {number: partNum, quantity: toInteger(qty), duns: duns})
             MERGE (t)-[:CONTAINS_PART]->(p)
         ")
         .param("trailer", update_io.Schedule.TrailerID.clone())
@@ -474,7 +473,7 @@ pub async fn upload_in_transit(
             MERGE (trailer)-[:HAS_SCHEDULE]->(s:Schedule)
             ON CREATE SET
                 s.TrailerID    = trailer.id,
-                s.Destination  = s.Destination,
+                s.Destination  = $destination,
                 s.Supplier     = $supplier,
                 s.OriginalDate = '',
                 s.ScheduleDate = '',
@@ -485,7 +484,7 @@ pub async fn upload_in_transit(
                 s.Location     = $location,
                 s.ShipDate     = $ship_date
             ON MATCH SET
-                s.Destination  = $destination,
+                s.Destination  = s.Destination,
                 s.Supplier     = $supplier,
                 s.Location     = $location,
                 s.ShipDate     = CASE WHEN $ship_date = '' THEN coalesce(s.ShipDate, '') ELSE $ship_date END

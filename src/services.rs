@@ -14,7 +14,7 @@ pub async fn late_trailer_service(graph: Arc<Graph>, ws_list: WebSocketList) {
         interval.tick().await;
         println!("Running late trailer service...");
         let now = crate::helpers::now_central();
-        let fifteen_mins_ago = now - chrono::Duration::minutes(15);
+        let fifteen_mins_ago = now - chrono::Duration::minutes(12);
 
         let q = query("
             MATCH (t:LiveTrailer)
