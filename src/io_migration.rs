@@ -461,13 +461,22 @@ async fn import_history(txn: &mut Txn, rows: &[IoHistory], (label, date_key): (&
     Ok(rows.len())
 }
 
-async fn import_exceptions(txn: &mut Txn, rows: &[ExceptionLogEntry]) -> Result<usize, String> {
-    // Same MERGE key as upload_exception, but written directly: going through
-    // that route would log an "exception uploaded" audit event per row, stamped
-    // with the importer and today's date.
+/// How rows land: Merge onto upload_exception's key (load #, dock, trailer) for the
+/// additive IO import, or Create one node per row for the sheet import — every
+/// sheet row shares one load #, so merging would collapse two entries for the
+/// same trailer on different shifts into one, and that run has just deleted the
+/// previous import so nothing can double up.
+#[derive(Clone, Copy)]
+enum Write { Merge, Create }
+
+async fn import_exceptions(txn: &mut Txn, rows: &[ExceptionLogEntry], write: Write) -> Result<usize, String> {
+    // Written directly rather than through upload_exception, which would log an
+    // "exception uploaded" audit event per row, stamped with the importer and
+    // today's date.
+    let verb = match write { Write::Merge => "MERGE", Write::Create => "CREATE" };
     for e in rows {
-        txn.run(query("
-            MERGE (e:ExceptionLogEntry {loadNum: $loadNum, dock: $dock, trailer1: $trailer1})
+        txn.run(query(&format!("
+            {verb} (e:ExceptionLogEntry {{loadNum: $loadNum, dock: $dock, trailer1: $trailer1}})
             SET e.type           = $type,
                 e.status         = $status,
                 e.route          = $route,
@@ -485,7 +494,7 @@ async fn import_exceptions(txn: &mut Txn, rows: &[ExceptionLogEntry]) -> Result<
                 e.requestor      = $requestor,
                 e.isRepower      = $isRepower,
                 e.repowerLoadNum = $repowerLoadNum
-        ")
+        "))
         .param("loadNum",        e.loadNum.clone())
         .param("dock",           e.dock.clone())
         .param("trailer1",       e.trailer1.clone())
@@ -519,7 +528,7 @@ async fn import_all(txn: &mut Txn, data: &IoData) -> Result<IoImportResult, Stri
         lines,
         delivered:  import_history(txn, &data.delivered, DELIVERED).await?,
         no_shows:   import_history(txn, &data.no_shows, NO_SHOW).await?,
-        exceptions: import_exceptions(txn, &data.exceptions).await?,
+        exceptions: import_exceptions(txn, &data.exceptions, Write::Merge).await?,
     })
 }
 
@@ -563,8 +572,9 @@ pub struct DySheetRow {
 
 /// The DropYard Communication Log counterpart of import_exception_sheet: deletes
 /// every loadNum 'DropYard' DY entry and writes the sheet's rows, in one
-/// transaction. Same MERGE key as upload_dycomm, written directly so there's no
-/// audit event per row.
+/// transaction. One node per row (see `Write`): the same trailer can appear on
+/// different shifts, and the delete just before rules out doubling up. Written
+/// directly rather than through upload_dycomm, so there's no audit event per row.
 #[post("/api/import_dy_sheet", format = "json", data = "<rows>")]
 pub async fn import_dy_sheet(
     rows:   Json<Vec<DySheetRow>>,
@@ -594,7 +604,7 @@ pub async fn import_dy_sheet(
         for r in rows.iter() {
             let e = &r.entry;
             txn.run(query("
-                MERGE (d:DyCommLogEntry {loadNum: $loadNum, dock: $dock, trailer: $trailer})
+                CREATE (d:DyCommLogEntry {loadNum: $loadNum, dock: $dock, trailer: $trailer})
                 SET d.scac         = $scac,
                     d.route        = $route,
                     d.location     = $location,
@@ -673,7 +683,7 @@ pub async fn import_exception_sheet(
 
     let result: Result<SheetImportResult, String> = async {
         let deleted  = delete_sheet_entries(&mut txn, "ExceptionLogEntry", SHEET_LOAD_NUM).await?;
-        let imported = import_exceptions(&mut txn, &data.exceptions).await?;
+        let imported = import_exceptions(&mut txn, &data.exceptions, Write::Create).await?;
         Ok(SheetImportResult { deleted, imported })
     }.await;
 
