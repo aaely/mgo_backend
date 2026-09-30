@@ -1173,6 +1173,55 @@ pub async fn get_deck_by_route(
     }
 }
 
+/// First Supplier for a load: the supplier of the route's lowest-DOH part. Routes
+/// match on their first 6 characters, the same key DockSplits uses for a trailer's
+/// DOH, so this names the part behind the DOH shown on the boards.
+///
+/// Always answers with a FirstSupplier — empty when nothing matches — because an
+/// Err(Json(..)) here would reach the client as 200 with a bare string, which it
+/// would then take for a supplier name.
+#[get("/api/get_first_supplier?<route>")]
+pub async fn get_first_supplier(
+    route: &str,
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+) -> Json<FirstSupplier> {
+    let graph  = &state.graph;
+    let prefix: String = route.trim().to_lowercase().chars().take(6).collect();
+
+    // A short key would STARTS WITH-match unrelated routes.
+    if prefix.chars().count() < 6 {
+        return Json(FirstSupplier::default());
+    }
+
+    let q = neo4rs::query("
+        MATCH (r:PartRoute) WHERE toLower(r.route) STARTS WITH $prefix
+        MATCH (a:PartASL {part: r.part})
+        WHERE a.doh IS NOT NULL
+        RETURN a.supplier AS supplier, r.part AS part, a.doh AS doh
+        ORDER BY a.doh ASC, r.part ASC
+        LIMIT 1
+    ").param("prefix", prefix);
+
+    match graph.execute(q).await {
+        Ok(mut result) => {
+            if let Ok(Some(row)) = result.next().await {
+                Json(FirstSupplier {
+                    supplier: row.get("supplier").unwrap_or_default(),
+                    part:     row.get("part").unwrap_or_default(),
+                    doh:      row.get("doh").ok(),
+                })
+            } else {
+                Json(FirstSupplier::default())
+            }
+        }
+        Err(e) => {
+            eprintln!("get_first_supplier error: {e}");
+            Json(FirstSupplier::default())
+        }
+    }
+}
+
 #[get("/api/get_deck_assignee_slack?<route>")]
 pub async fn get_deck_assignee_slack(
     route:  &str,

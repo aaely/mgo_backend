@@ -716,6 +716,15 @@ pub struct PartRoute {
     pub doh:   Option<f64>,
 }
 
+/// The supplier of the lowest-DOH part on a route — what a log entry files as
+/// First Supplier. Fields are empty when the route has no part with a DOH.
+#[derive(Debug, Serialize, Default)]
+pub struct FirstSupplier {
+    pub supplier: String,
+    pub part:     String,
+    pub doh:      Option<f64>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DeckRoute {
     pub route: String,
