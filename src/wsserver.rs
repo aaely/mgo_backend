@@ -16,16 +16,20 @@ use native_tls::{Identity, TlsAcceptor};
 use tokio_native_tls::TlsAcceptor as AsyncTlsAcceptor;
 use neo4rs::Graph;
 use crate::auth::decode_token;
-use crate::structs::{AppState, IncomingMessage, WebSocketList};
+use crate::structs::{
+    AppState, IncomingMessage, WebSocketList, WsTopics,
+    TOPIC_PART_ALERTS, TOPIC_LIVE_SHEET, TOPIC_NEXT_SHIFT,
+};
 
 #[get("/ws")]
 pub async fn ws_handler(state: &State<AppState>) -> Result<(), rocket::http::Status> {
     let ws_list    = state.ws_list.clone();
+    let ws_topics  = state.ws_topics.clone();
     let jwt_secret = state.jwt_secret.clone();
     let graph      = state.graph.clone();
     let use_https  = state.use_https;
     tokio::spawn(async move {
-        if let Err(e) = run_ws_server(ws_list, jwt_secret, graph, use_https).await {
+        if let Err(e) = run_ws_server(ws_list, ws_topics, jwt_secret, graph, use_https).await {
             println!("Error in WebSocket server: {}", e);
         }
     });
@@ -34,6 +38,7 @@ pub async fn ws_handler(state: &State<AppState>) -> Result<(), rocket::http::Sta
 
 pub async fn run_ws_server(
     ws_list:    WebSocketList,
+    ws_topics:  WsTopics,
     jwt_secret: String,
     graph:      Arc<Graph>,
     use_https:  bool,
@@ -59,6 +64,7 @@ pub async fn run_ws_server(
         let peer_addr = stream.peer_addr().expect("connected streams should have a peer address");
         let secret    = jwt_secret.clone();
         let ws_list   = ws_list.clone();
+        let ws_topics = ws_topics.clone();
         let graph     = graph.clone();
         let acceptor  = tls_acceptor.clone();
 
@@ -69,12 +75,12 @@ pub async fn run_ws_server(
                     Err(e) => { println!("TLS handshake failed from {}: {:?}", peer_addr, e); return; }
                 };
                 match do_ws_handshake(tls_stream, secret).await {
-                    Ok((ws, role)) => handle_connection(ws, peer_addr, ws_list, graph, role).await,
+                    Ok((ws, role)) => handle_connection(ws, peer_addr, ws_list, ws_topics, graph, role).await,
                     Err(e) => println!("Connection from {} rejected: {:?}", peer_addr, e),
                 }
             } else {
                 match do_ws_handshake(stream, secret).await {
-                    Ok((ws, role)) => handle_connection(ws, peer_addr, ws_list, graph, role).await,
+                    Ok((ws, role)) => handle_connection(ws, peer_addr, ws_list, ws_topics, graph, role).await,
                     Err(e) => println!("Connection from {} rejected: {:?}", peer_addr, e),
                 }
             }
@@ -128,6 +134,7 @@ async fn handle_connection<S>(
     ws_stream: WebSocketStream<S>,
     peer_addr: SocketAddr,
     ws_list:   WebSocketList,
+    ws_topics: WsTopics,
     _graph:    Arc<Graph>,
     role:      String,
 ) where
@@ -143,6 +150,7 @@ async fn handle_connection<S>(
     }
 
     let ws_list_incoming = ws_list.clone();
+    let ws_topics_incoming = ws_topics.clone();
     tokio::spawn(async move {
         while let Some(message) = ws_receiver.next().await {
             match message {
@@ -156,11 +164,33 @@ async fn handle_connection<S>(
                                     "ping" => {
                                         continue;
                                     }
+                                    // Topic opt-in/out. These are for this server only —
+                                    // they carry no payload for other clients, so they are
+                                    // never relayed.
+                                    "subscribe" | "unsubscribe" => {
+                                        let topic = incoming_message.data
+                                            .as_ref()
+                                            .map(|d| d.message.clone())
+                                            .unwrap_or_default();
+                                        if topic.is_empty() {
+                                            println!("Ignoring {} with no topic from {}", incoming_message.r#type, peer_addr);
+                                            continue;
+                                        }
+                                        let mut topics = ws_topics_incoming.lock().await;
+                                        if incoming_message.r#type == "subscribe" {
+                                            topics.entry(peer_addr).or_default().insert(topic.clone());
+                                            println!("{} subscribed to {}", peer_addr, topic);
+                                        } else if let Some(set) = topics.get_mut(&peer_addr) {
+                                            set.remove(&topic);
+                                            println!("{} unsubscribed from {}", peer_addr, topic);
+                                        }
+                                        continue;
+                                    }
                                     "trailer_update" => {
                                         println!("Handling trailer_update: {:?}", incoming_message.data);
                                     }
-                                    "add_on" => {
-                                        println!("Handling add_on: {:?}", incoming_message.data);
+                                    "add_on" | "staged_add_on" => {
+                                        println!("Handling {}: {:?}", incoming_message.r#type, incoming_message.data);
                                     }
                                     "part_alert" => {
                                         println!("Handling part_alert: {:?}", incoming_message.data);
@@ -179,10 +209,25 @@ async fn handle_connection<S>(
                                     }
                                 }
 
+                                // Opt-in feeds reach subscribers only; everything else
+                                // still relays to every client.
+                                let required_topic = match incoming_message.r#type.as_str() {
+                                    "part_alert"    => Some(TOPIC_PART_ALERTS),
+                                    "add_on"        => Some(TOPIC_LIVE_SHEET),
+                                    "staged_add_on" => Some(TOPIC_NEXT_SHIFT),
+                                    _               => None,
+                                };
+
                                 let response = Message::Text(serde_json::to_string(&incoming_message).unwrap());
                                 let list = ws_list_incoming.lock().await;
+                                let topics = ws_topics_incoming.lock().await;
                                 println!("Broadcasting message to {} clients", list.len());
-                                for (sender, _role) in list.values() {
+                                for (addr, (sender, _role)) in list.iter() {
+                                    if let Some(topic) = required_topic {
+                                        if !topics.get(addr).is_some_and(|t| t.contains(topic)) {
+                                            continue;
+                                        }
+                                    }
                                     if sender.send(response.clone()).is_err() {
                                         println!("Failed to send message to {}", peer_addr);
                                     }
@@ -207,10 +252,12 @@ async fn handle_connection<S>(
         }
         let mut list = ws_list_incoming.lock().await;
         list.remove(&peer_addr);
+        ws_topics_incoming.lock().await.remove(&peer_addr);
         println!("Client {} removed. Total clients: {}", peer_addr, list.len());
     });
 
     let ws_list_outgoing = ws_list.clone();
+    let ws_topics_outgoing = ws_topics.clone();
     tokio::spawn(async move {
         while let Some(message) = rx.recv().await {
             if ws_sender.send(message).await.is_err() {
@@ -220,6 +267,7 @@ async fn handle_connection<S>(
         }
         let mut list = ws_list_outgoing.lock().await;
         list.remove(&peer_addr);
+        ws_topics_outgoing.lock().await.remove(&peer_addr);
         println!("Client {} disconnected. Total clients: {}", peer_addr, list.len());
     });
 }

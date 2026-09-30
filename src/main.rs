@@ -54,6 +54,7 @@ impl AppState {
 
         AppState {
             ws_list: Arc::new(Mutex::new(HashMap::new())),
+            ws_topics: Arc::new(Mutex::new(HashMap::new())),
             graph: Arc::new(graph),
             jwt_secret,
             alerted_parts: Arc::new(Mutex::new(HashMap::new())),
@@ -99,6 +100,7 @@ async fn main() {
         .attach(AdHoc::on_liftoff("Start Background Services", |rocket| Box::pin(async move {
             let state = rocket.state::<AppState>().unwrap();
             let ws_list = state.ws_list.clone();
+            let ws_topics = state.ws_topics.clone();
             let graph = state.graph.clone();
             let jwt_secret  = state.jwt_secret.clone();
             let ws_graph    = state.graph.clone();
@@ -106,7 +108,7 @@ async fn main() {
 
             // WebSocket server
             tokio::spawn(async move {
-                if let Err(e) = run_ws_server(ws_list.clone(), jwt_secret, ws_graph, use_https).await {
+                if let Err(e) = run_ws_server(ws_list.clone(), ws_topics, jwt_secret, ws_graph, use_https).await {
                     println!("Error in WebSocket server: {}", e);
                 }
             });
@@ -119,10 +121,11 @@ async fn main() {
 
             let graph3  = state.graph.clone();
             let ws_list3 = state.ws_list.clone();
+            let ws_topics3 = state.ws_topics.clone();
             let alerted = state.alerted_parts.clone();
             let current_alerts = state.current_alerts.clone();
             tokio::spawn(async move {
-                part_monitoring_service(graph3, ws_list3, alerted, current_alerts).await;
+                part_monitoring_service(graph3, ws_list3, ws_topics3, alerted, current_alerts).await;
             });
         })))
         .mount("/", FileServer::from("dist"))
@@ -176,6 +179,7 @@ async fn main() {
             get_past_shift,
             get_live_trailers,
             push_add_on,
+            push_staged_add_on,
             get_hot_parts,
             get_dock_count,
             restart_week,

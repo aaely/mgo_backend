@@ -1,13 +1,26 @@
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc::UnboundedSender, Mutex};
 use tokio_tungstenite::tungstenite::protocol::Message;
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{collections::{HashMap, HashSet}, net::SocketAddr, sync::Arc};
 use neo4rs::{Graph, Node, query};
 
 use crate::helpers::*;
 
 
 pub type WebSocketList = Arc<Mutex<HashMap<SocketAddr, (UnboundedSender<Message>, String)>>>;
+
+/// Topics each connection has opted into, so a feed can be sent to the clients
+/// actually showing it instead of every socket. Clients opt in with a
+/// `subscribe`/`unsubscribe` message naming the topic.
+pub type WsTopics = Arc<Mutex<HashMap<SocketAddr, HashSet<String>>>>;
+
+/// Live part alerts. Only the Part Alerts page subscribes.
+pub const TOPIC_PART_ALERTS: &str = "part_alerts";
+
+/// The live board and the next-shift board share the same client-side lists, so
+/// each add-on goes only to the page that shows that half of the data.
+pub const TOPIC_LIVE_SHEET: &str = "live_sheet";
+pub const TOPIC_NEXT_SHIFT: &str = "next_shift";
 
 #[derive(Serialize, Deserialize, PartialEq, Default, Debug)]
 pub struct InTransit {
@@ -314,6 +327,7 @@ pub struct AppState {
     pub graph: Arc<Graph>,
     pub jwt_secret: String,
     pub ws_list: WebSocketList,
+    pub ws_topics: WsTopics,
     pub alerted_parts: Arc<Mutex<HashMap<String, chrono::DateTime<chrono_tz::Tz>>>>,
     pub edit_refs: Arc<Mutex<HashMap<String, HashMap<String, String>>>>,
     pub current_alerts: Arc<Mutex<Vec<PartAlert>>>,

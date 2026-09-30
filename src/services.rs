@@ -199,6 +199,7 @@ async fn dispatch_alert(
 pub async fn part_monitoring_service(
     graph: Arc<Graph>,
     ws_list: WebSocketList,
+    ws_topics: WsTopics,
     alerted_parts: Arc<Mutex<HashMap<String, chrono::DateTime<chrono_tz::Tz>>>>,
     current_alerts: Arc<Mutex<Vec<PartAlert>>>,
 ) {
@@ -566,8 +567,17 @@ pub async fn part_monitoring_service(
                 data:   Some(MessageData { message: data }),
             };
             if let Ok(message) = serde_json::to_string(&ws_msg) {
+                // Only the clients showing the Part Alerts page want this feed, so
+                // skip every socket that has not subscribed to the topic.
                 let ws_list = ws_list.lock().await;
-                for (_, (tx, _)) in ws_list.iter() {
+                let topics  = ws_topics.lock().await;
+                for (addr, (tx, _)) in ws_list.iter() {
+                    let subscribed = topics
+                        .get(addr)
+                        .is_some_and(|t| t.contains(TOPIC_PART_ALERTS));
+                    if !subscribed {
+                        continue;
+                    }
                     let _ = tx.send(Message::Text(message.clone()));
                 }
             }

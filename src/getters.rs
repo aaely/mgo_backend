@@ -728,7 +728,7 @@ pub async fn get_live_trailers(
 #[get("/api/get_staged_trailers")]
 pub async fn get_staged_trailers(
     state: &State<AppState>,
-    _user: AuthenticatedUser,
+    user: AuthenticatedUser,
     role: Role,
 ) -> Result<Json<Vec<TrailerRecord>>, Json<&'static str>> {
     let graph = &state.graph;
@@ -774,7 +774,7 @@ pub async fn get_staged_trailers(
                     ryderComments:     node.get("ryderComments").unwrap_or_default(),
                     gmComments:        Some(node.get("gmComments").unwrap_or_default()),
                     lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
-                    editRef:           node.get("editRef").unwrap_or_default(),
+                    editRef:           String::new(),
                     door:              node.get("door").unwrap_or_default(),
                     doorArrivalTime:   node.get("doorArrivalTime").unwrap_or_default(),
                     gateArrivalDate:   node.get("gateArrivalDate").unwrap_or_default(),
@@ -789,6 +789,22 @@ pub async fn get_staged_trailers(
             if role.0.contains("vaa") {
                 records.retain(|r| r.dockCode == "V");
             }
+
+            // Next Shift checks in early arrivals, so these rows need editRefs of
+            // their own. Add to the user's map rather than replacing it — the live
+            // sheet may be open in another tab and its refs must stay valid.
+            {
+                let mut edit_refs = state.edit_refs.lock().await;
+                let user_map = edit_refs
+                    .entry(user.0.username.clone())
+                    .or_insert_with(HashMap::new);
+                for record in &mut records {
+                    let edit_ref = uuid::Uuid::new_v4().to_string();
+                    user_map.insert(edit_ref.clone(), record.uuid.clone());
+                    record.editRef = edit_ref;
+                }
+            }
+
             Ok(Json(records))
         }
         Err(e) => {

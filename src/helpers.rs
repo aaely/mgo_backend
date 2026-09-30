@@ -183,7 +183,9 @@ pub fn get_requested_fields(trailer: &TrailerRecord) -> Vec<&'static str> {
     fields
 }
 
-pub fn build_update_query(role: &str, trailer: &TrailerRecord) -> neo4rs::Query {
+// `label` is resolved from the node itself, never from request data — early
+// arrivals are worked off Next Shift, so the row may still be a StagedTrailer.
+pub fn build_update_query(role: &str, trailer: &TrailerRecord, label: &str) -> neo4rs::Query {
     let allowed = get_allowed_fields(role).unwrap_or_default();
     let is_admin = allowed.contains(&"*");
 
@@ -211,7 +213,8 @@ pub fn build_update_query(role: &str, trailer: &TrailerRecord) -> neo4rs::Query 
     if is_admin || allowed.contains(&"doorArrivalTime")   { sets.push("t.doorArrivalTime = $doorArrivalTime") }
 
     let cypher = format!(
-        "MATCH (t:LiveTrailer {{uuid: $uuid}}) SET {} RETURN t",
+        "MATCH (t:{} {{uuid: $uuid}}) SET {} RETURN t",
+        label,
         sets.join(", ")
     );
 
@@ -247,7 +250,7 @@ pub fn get_event_type(field: &str) -> &'static str {
         "gateArrivalTime" | "actualStartTime" | "actualEndTime" |
         "gateArrivalDate" | "doorArrivalDate" | "actualStartDate" | "actualEndDate" |
         "statusOX" | "stat" | "ryderComments" | "gmComments" |
-        "door" | "doorArrivalTime" | "LiveAdd" => "Trailer Updates",
+        "door" | "doorArrivalTime" | "LiveAdd" | "StagedAdd" => "Trailer Updates",
         "shift_rolled"                          => "Shift Roll",
         "hot_part_created" | "hot_part_closed"  => "Hot Parts",
         "exception_uploaded" | "dycomm_uploaded" => "Uploads",

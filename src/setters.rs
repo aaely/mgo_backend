@@ -1325,11 +1325,64 @@ pub async fn push_add_on (
         return Err(Json("Forbidden"));
     }
 
+    create_add_on(
+        AddOnTarget {
+            label:       "LiveTrailer",
+            ws_type:     "add_on",
+            topic:       TOPIC_LIVE_SHEET,
+            audit_field: "LiveAdd",
+        },
+        add_on.into_inner(), state, &user.0.username,
+    ).await
+}
+
+/// An add-on for the shift being built rather than the one in progress. Lands as
+/// a StagedTrailer, which the roll promotes onto the live sheet.
+#[post("/api/push_staged_add_on", format = "json", data = "<add_on>")]
+pub async fn push_staged_add_on (
+    add_on: Json<TrailerRecord>,
+    state:  &State<AppState>,
+    user:   AuthenticatedUser,
+    role:   Role,
+) -> Result<Json<TrailerRecord>, Json<&'static str>> {
+
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err(Json("Forbidden"));
+    }
+
+    create_add_on(
+        AddOnTarget {
+            label:       "StagedTrailer",
+            ws_type:     "staged_add_on",
+            topic:       TOPIC_NEXT_SHIFT,
+            audit_field: "StagedAdd",
+        },
+        add_on.into_inner(), state, &user.0.username,
+    ).await
+}
+
+/// Which board an add-on belongs to. `label` is a fixed string from the call
+/// sites below, never request data.
+struct AddOnTarget {
+    label:       &'static str,
+    ws_type:     &'static str,
+    topic:       &'static str,
+    audit_field: &'static str,
+}
+
+async fn create_add_on(
+    target: AddOnTarget,
+    add_on: TrailerRecord,
+    state:  &State<AppState>,
+    username: &str,
+) -> Result<Json<TrailerRecord>, Json<&'static str>> {
+
     let graph = &state.graph;
 
-    let q = query("
-        CREATE (t:LiveTrailer {
+    let q = query(&format!("
+        CREATE (t:{} {{
             uuid:              $uuid,
+            origin:            $origin,
             hour:              $hour,
             dateShift:         $dateShift,
             lmsAccent:         $lmsAccent,
@@ -1362,10 +1415,11 @@ pub async fn push_add_on (
             doorArrivalDate:   $doorArrivalDate,
             actualStartDate:   $actualStartDate,
             actualEndDate:     $actualEndDate
-        })
+        }})
         RETURN t
-    ")
+    ", target.label))
     .param("uuid",              add_on.uuid.clone())
+    .param("origin",            add_on.origin.clone())
     .param("hour",              add_on.hour.clone())
     .param("dateShift",         add_on.dateShift.clone())
     .param("lmsAccent",         add_on.lmsAccent.clone())
@@ -1444,17 +1498,21 @@ pub async fn push_add_on (
                 };
 
                 // ── Broadcast without editRef (editRefs are per-user, not shared) ──
+                // The live and next-shift boards share one client-side list, so this
+                // goes only to the clients showing the board it belongs to.
                 if let Ok(data) = serde_json::to_string(&created) {
                     let ws_msg = IncomingMessage {
-                        r#type: "add_on".to_string(),
+                        r#type: target.ws_type.to_string(),
                         data: Some(MessageData { message: data }),
                     };
                     if let Ok(message) = serde_json::to_string(&ws_msg) {
                         let dock = &created.dockCode;
                         let ws_list = state.ws_list.lock().await;
-                        for (_, (tx, role)) in ws_list.iter() {
+                        let topics  = state.ws_topics.lock().await;
+                        for (addr, (tx, role)) in ws_list.iter() {
                             if role.contains("vaa")  && dock != "V" { continue; }
                             if role.contains("univ") && dock != "U" { continue; }
+                            if !topics.get(addr).is_some_and(|t| t.contains(target.topic)) { continue; }
                             let _ = tx.send(Message::Text(message.clone()));
                         }
                     }
@@ -1465,12 +1523,12 @@ pub async fn push_add_on (
                 {
                     let mut edit_refs = state.edit_refs.lock().await;
                     edit_refs
-                        .entry(user.0.username.clone())
+                        .entry(username.to_string())
                         .or_insert_with(HashMap::new)
                         .insert(creator_edit_ref.clone(), created.uuid.clone());
                 }
 
-                // ── Audit trail: single entry for live add-on ──
+                // ── Audit trail: single entry for the add-on ──
                 let audit_timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
                 let audit_op_date   = chrono::Utc::now().format("%Y-%m-%d").to_string();
                 let audit_new_value = format!("{}/{}", created.lmsAccent, created.trailer1);
@@ -1479,7 +1537,7 @@ pub async fn push_add_on (
                     MERGE (o:OpDate {date: $op_date})
                     CREATE (a:AuditEvent {
                         trailer_uuid: $uuid,
-                        field:        'LiveAdd',
+                        field:        $field,
                         old_value:    '',
                         new_value:    $new_value,
                         timestamp:    $timestamp,
@@ -1489,12 +1547,13 @@ pub async fn push_add_on (
                 ")
                 .param("op_date",    audit_op_date)
                 .param("uuid",       created.uuid.clone())
+                .param("field",      target.audit_field.to_string())
                 .param("new_value",  audit_new_value)
                 .param("timestamp",  audit_timestamp)
-                .param("updated_by", user.0.username.clone());
+                .param("updated_by", username.to_string());
 
                 if let Err(e) = graph.run(aq).await {
-                    eprintln!("Failed to write LiveAdd audit event: {:?}", e);
+                    eprintln!("Failed to write {} audit event: {:?}", target.audit_field, e);
                 }
 
                 Ok(Json(TrailerRecord { editRef: creator_edit_ref, ..created }))
@@ -1833,14 +1892,20 @@ pub async fn update_live_trailer(
     trailer.uuid = uuid;
 
     // ── Fetch pre-update state for audit diff ──
-    let pre_fetch_q = query("MATCH (t:LiveTrailer {uuid: $uuid}) RETURN t")
-        .param("uuid", trailer.uuid.clone());
+    // Next Shift checks in trailers that arrive before the roll, so the row may
+    // still be staged. Find which label actually holds it and update in place.
+    let mut label = "LiveTrailer";
+    let mut old_values: HashMap<&'static str, String> = HashMap::new();
 
-    let old_values: HashMap<&'static str, String> = match graph.execute(pre_fetch_q).await {
-        Ok(mut result) => {
+    for candidate in ["LiveTrailer", "StagedTrailer"] {
+        let pre_fetch_q = query(&format!("MATCH (t:{} {{uuid: $uuid}}) RETURN t", candidate))
+            .param("uuid", trailer.uuid.clone());
+
+        if let Ok(mut result) = graph.execute(pre_fetch_q).await {
             if let Ok(Some(row)) = result.next().await {
                 if let Ok(n) = row.get::<Node>("t") {
-                    let mut m: HashMap<&'static str, String> = HashMap::new();
+                    label = candidate;
+                    let m = &mut old_values;
                     m.insert("hour",              n.get("hour").unwrap_or_default());
                     m.insert("dockCode",          n.get("dockCode").unwrap_or_default());
                     m.insert("scac",              n.get("scac").unwrap_or_default());
@@ -1856,18 +1921,13 @@ pub async fn update_live_trailer(
                     m.insert("stat",              n.get("stat").unwrap_or_default());
                     m.insert("ryderComments",     n.get("ryderComments").unwrap_or_default());
                     m.insert("gmComments",        n.get("gmComments").unwrap_or_default());
-                    m
-                } else {
-                    HashMap::new()
+                    break;
                 }
-            } else {
-                HashMap::new()
             }
         }
-        Err(_) => HashMap::new(),
-    };
+    }
 
-    let update_query = build_update_query(&role.0, &trailer);
+    let update_query = build_update_query(&role.0, &trailer, label);
 
     match graph.execute(update_query).await {
         Ok(mut result) => {
