@@ -201,6 +201,9 @@ async fn main() {
             // One-time test -> prod IO migration; remove with io_migration.rs
             io_migration::export_io,
             io_migration::import_io,
+            io_migration::import_exception_sheet,
+            io_migration::import_dy_sheet,
+            io_migration::import_contacts,
             get_route_delivering,
             get_exceptions,
             upload_exception,

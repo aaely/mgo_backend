@@ -16,10 +16,23 @@
 //! upload in the target lands on the imported nodes instead of duplicating them.
 //! Import only adds and updates, never deletes, and runs as one transaction.
 //!
-//! Delete this module (and its two routes in main.rs) once the migration is done.
+//! /api/import_exception_sheet and /api/import_dy_sheet serve the Exception Log
+//! and DropYard Communication Log spreadsheet migrations (lms_react
+//! pages/ExceptionMigration.tsx, pages/DyMigration.tsx). Unlike the IO import they
+//! replace: the sheets stay in use until their entries wash out, so each run swaps
+//! every entry under the sheet's load # — 'Exception' or 'DropYard' — for its
+//! current rows.
+//!
+//! /api/import_contacts loads a Contact dump from another instance (lms_react
+//! pages/ContactMigration.tsx). Additive, matched on email.
+//!
+//! Delete this module (and its routes in main.rs) once the migrations are done,
+//! together with IoMigration.tsx, ExceptionMigration.tsx, DyMigration.tsx,
+//! ContactMigration.tsx, SheetMigration.tsx and utils/sheetCells.ts,
+//! exceptionSheet.ts, dySheet.ts, contactFile.ts.
 
 use crate::auth::AdminOnly;
-use crate::structs::{AppState, ExceptionLogEntry};
+use crate::structs::{AppState, Contact, DyCommLogEntry, ExceptionLogEntry};
 use neo4rs::{query, Node, Txn};
 use rocket::{get, http::Status, post, serde::json::Json, State};
 use serde::{Deserialize, Serialize};
@@ -508,6 +521,240 @@ async fn import_all(txn: &mut Txn, data: &IoData) -> Result<IoImportResult, Stri
         no_shows:   import_history(txn, &data.no_shows, NO_SHOW).await?,
         exceptions: import_exceptions(txn, &data.exceptions).await?,
     })
+}
+
+/// Every sheet row is filed under this load number, which is also what marks an
+/// entry as the sheet's to replace.
+const SHEET_LOAD_NUM: &str = "Exception";
+const DY_SHEET_LOAD_NUM: &str = "DropYard";
+
+/// Deletes a spreadsheet's previous import — every `label` node filed under
+/// `load_num` — and returns how many went. `label` is a fixed string from the
+/// callers below, never request data.
+async fn delete_sheet_entries(txn: &mut Txn, label: &str, load_num: &str) -> Result<usize, String> {
+    let mut deleted = txn.execute(query(&format!("
+        MATCH (n:{label} {{loadNum: $load_num}})
+        DETACH DELETE n
+        RETURN count(*) AS deleted
+    ")).param("load_num", load_num))
+        .await
+        .map_err(|e| format!("Failed to clear old {label} sheet entries: {e:?}"))?;
+    // Drain to the end: the transaction's connection can't take the next query
+    // while this result is still open.
+    let mut count: i64 = 0;
+    while let Some(row) = deleted.next(txn.handle()).await
+        .map_err(|e| format!("Failed to read delete count: {e:?}"))?
+    {
+        count = row.get("deleted").unwrap_or(0);
+    }
+    Ok(count as usize)
+}
+
+/// A DY Comm Log sheet row: the entry plus when it was logged, which upload_dycomm
+/// would otherwise stamp as the moment of import.
+#[derive(Debug, Deserialize)]
+pub struct DySheetRow {
+    #[serde(flatten)]
+    pub entry:     DyCommLogEntry,
+    /// UTC 'YYYY-MM-DD HH:MM', the format upload_dycomm writes; '' for unknown.
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+}
+
+/// The DropYard Communication Log counterpart of import_exception_sheet: deletes
+/// every loadNum 'DropYard' DY entry and writes the sheet's rows, in one
+/// transaction. Same MERGE key as upload_dycomm, written directly so there's no
+/// audit event per row.
+#[post("/api/import_dy_sheet", format = "json", data = "<rows>")]
+pub async fn import_dy_sheet(
+    rows:   Json<Vec<DySheetRow>>,
+    state:  &State<AppState>,
+    _guard: AdminOnly,
+) -> Result<Json<SheetImportResult>, ApiError> {
+    for (i, r) in rows.iter().enumerate() {
+        let e = &r.entry;
+        let at = format!("Row {}", i + 1);
+        // Anything under another load number would survive the next run's delete
+        // and then be duplicated by it.
+        if e.loadNum != DY_SHEET_LOAD_NUM {
+            return Err((Status::BadRequest, Json(format!(
+                "{at} has load # '{}'; sheet entries must all be '{DY_SHEET_LOAD_NUM}'", e.loadNum))));
+        }
+        if e.trailer.trim().is_empty() || e.dock.trim().is_empty() {
+            return Err((Status::BadRequest, Json(format!("{at}: trailer and dock are required"))));
+        }
+    }
+
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M").to_string();
+    let mut txn = state.graph.start_txn().await
+        .map_err(|e| server_error("Failed to start transaction", e))?;
+
+    let result: Result<SheetImportResult, String> = async {
+        let deleted = delete_sheet_entries(&mut txn, "DyCommLogEntry", DY_SHEET_LOAD_NUM).await?;
+        for r in rows.iter() {
+            let e = &r.entry;
+            txn.run(query("
+                MERGE (d:DyCommLogEntry {loadNum: $loadNum, dock: $dock, trailer: $trailer})
+                SET d.scac         = $scac,
+                    d.route        = $route,
+                    d.location     = $location,
+                    d.deliveryDate = $deliveryDate,
+                    d.deliveryTime = $deliveryTime,
+                    d.supplier     = $supplier,
+                    d.part         = $part,
+                    d.pdt          = $pdt,
+                    d.createdBy    = $createdBy,
+                    d.createdAt    = CASE WHEN $createdAt = '' THEN $now ELSE $createdAt END,
+                    d.updatedAt    = $now
+            ")
+            .param("loadNum",      e.loadNum.clone())
+            .param("dock",         e.dock.clone())
+            .param("trailer",      e.trailer.clone())
+            .param("scac",         e.scac.clone())
+            .param("route",        e.route.clone())
+            .param("location",     e.location.clone())
+            .param("deliveryDate", e.deliveryDate.clone())
+            .param("deliveryTime", e.deliveryTime.clone())
+            .param("supplier",     e.supplier.clone())
+            .param("part",         e.part.clone())
+            .param("pdt",          e.pdt.clone())
+            .param("createdBy",    e.createdBy.clone())
+            .param("createdAt",    r.created_at.clone())
+            .param("now",          now.clone()))
+            .await
+            .map_err(|err| format!("Failed to write DY entry {} / {}: {err:?}", e.dock, e.trailer))?;
+        }
+        Ok(SheetImportResult { deleted, imported: rows.len() })
+    }.await;
+
+    match result {
+        Ok(counts) => {
+            txn.commit().await.map_err(|e| server_error("Failed to commit DY sheet import", e))?;
+            println!("import_dy_sheet committed: {counts:?}");
+            Ok(Json(counts))
+        }
+        Err(msg) => {
+            let _ = txn.rollback().await;
+            eprintln!("import_dy_sheet rolled back: {msg}");
+            Err((Status::InternalServerError, Json(format!("Nothing was changed. {msg}"))))
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct SheetImportResult {
+    pub deleted:  usize,
+    pub imported: usize,
+}
+
+/// Replaces the Exception Log spreadsheet's entries: deletes every loadNum
+/// 'Exception' entry, then writes the sheet's rows — both in one transaction,
+/// so a failed import leaves the previous entries in place.
+///
+/// Entries edited in the app since the last run are replaced by the sheet's
+/// version; while the sheet is still in use it is the source of truth.
+#[post("/api/import_exception_sheet", format = "json", data = "<rows>")]
+pub async fn import_exception_sheet(
+    rows:   Json<Vec<ExceptionLogEntry>>,
+    state:  &State<AppState>,
+    _guard: AdminOnly,
+) -> Result<Json<SheetImportResult>, ApiError> {
+    // Anything under another load number would survive the next run's delete
+    // and then be duplicated by it.
+    if let Some((i, e)) = rows.iter().enumerate().find(|(_, e)| e.loadNum != SHEET_LOAD_NUM) {
+        return Err((Status::BadRequest, Json(format!(
+            "Row {} has load # '{}'; sheet entries must all be '{SHEET_LOAD_NUM}'", i + 1, e.loadNum))));
+    }
+    let data = IoData { exceptions: rows.into_inner(), ..Default::default() };
+    validate(&data).map_err(|msg| (Status::BadRequest, Json(msg)))?;
+
+    let mut txn = state.graph.start_txn().await
+        .map_err(|e| server_error("Failed to start transaction", e))?;
+
+    let result: Result<SheetImportResult, String> = async {
+        let deleted  = delete_sheet_entries(&mut txn, "ExceptionLogEntry", SHEET_LOAD_NUM).await?;
+        let imported = import_exceptions(&mut txn, &data.exceptions).await?;
+        Ok(SheetImportResult { deleted, imported })
+    }.await;
+
+    match result {
+        Ok(counts) => {
+            txn.commit().await.map_err(|e| server_error("Failed to commit sheet import", e))?;
+            println!("import_exception_sheet committed: {counts:?}");
+            Ok(Json(counts))
+        }
+        Err(msg) => {
+            let _ = txn.rollback().await;
+            eprintln!("import_exception_sheet rolled back: {msg}");
+            Err((Status::InternalServerError, Json(format!("Nothing was changed. {msg}"))))
+        }
+    }
+}
+
+/// Loads Contact nodes exported from another environment (/api/get_contacts
+/// there). Additive: a contact is matched on email and updated, anything not in
+/// the file is left alone. Uses update_contact's query so each contact is linked
+/// to its Duns and Carrier the same way the Manage Contacts page does it.
+#[post("/api/import_contacts", format = "json", data = "<contacts>")]
+pub async fn import_contacts(
+    contacts: Json<Vec<Contact>>,
+    state:    &State<AppState>,
+    _guard:   AdminOnly,
+) -> Result<Json<usize>, ApiError> {
+    // update_contact's own rules, checked for the whole file before writing.
+    for (i, c) in contacts.iter().enumerate() {
+        if c.email.trim().is_empty() {
+            return Err((Status::BadRequest, Json(format!("Contact {}: email is required", i + 1))));
+        }
+        if c.duns.trim().is_empty() && c.scac.trim().is_empty() {
+            return Err((Status::BadRequest, Json(format!("Contact {} ({}): needs a DUNS or a SCAC", i + 1, c.email))));
+        }
+    }
+
+    let mut txn = state.graph.start_txn().await
+        .map_err(|e| server_error("Failed to start transaction", e))?;
+
+    let result: Result<usize, String> = async {
+        for c in contacts.iter() {
+            txn.run(query("
+                MERGE (c:Contact {email: $email})
+                SET c.name  = $name,
+                    c.phone = $phone,
+                    c.duns  = $duns,
+                    c.scac  = $scac
+                WITH c
+                FOREACH (_ IN CASE WHEN c.duns <> '' THEN [1] ELSE [] END |
+                    MERGE (d:Duns {duns: c.duns})
+                    MERGE (d)-[:HAS_CONTACT]->(c)
+                )
+                FOREACH (_ IN CASE WHEN c.scac <> '' THEN [1] ELSE [] END |
+                    MERGE (car:Carrier {scac: c.scac})
+                    MERGE (car)-[:HAS_CONTACT]->(c)
+                )
+            ")
+            .param("email", c.email.clone())
+            .param("name",  c.name.clone())
+            .param("phone", c.phone.clone())
+            .param("duns",  c.duns.clone())
+            .param("scac",  c.scac.clone()))
+            .await
+            .map_err(|e| format!("Failed to write contact {}: {e:?}", c.email))?;
+        }
+        Ok(contacts.len())
+    }.await;
+
+    match result {
+        Ok(n) => {
+            txn.commit().await.map_err(|e| server_error("Failed to commit contacts", e))?;
+            println!("import_contacts committed: {n}");
+            Ok(Json(n))
+        }
+        Err(msg) => {
+            let _ = txn.rollback().await;
+            eprintln!("import_contacts rolled back: {msg}");
+            Err((Status::InternalServerError, Json(format!("Nothing was imported. {msg}"))))
+        }
+    }
 }
 
 #[post("/api/import_io", format = "json", data = "<data>")]
