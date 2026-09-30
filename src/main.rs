@@ -12,6 +12,7 @@ mod emailer;
 mod services;
 mod ldap_auth;
 mod azure_auth;
+mod io_migration;
 use rocket::data::ToByteUnit;
 use rocket::{get, routes};
 use rocket::fs::{FileServer, NamedFile};
@@ -197,6 +198,9 @@ async fn main() {
             get_scan_routes,
             get_part_routes,
             get_first_supplier,
+            // One-time test -> prod IO migration; remove with io_migration.rs
+            io_migration::export_io,
+            io_migration::import_io,
             get_route_delivering,
             get_exceptions,
             upload_exception,

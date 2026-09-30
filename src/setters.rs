@@ -50,6 +50,29 @@ pub async fn update_io(
         Json("Failed to update schedule")
     })?;
 
+    // ── Query 1b: Carry a trailer rename over to its IO exception entry ──
+    // The entry is found by trailer number (see unschedule_io), so without this a
+    // renamed trailer's entry is stranded under the old number and can no longer
+    // be unscheduled. Plain 'IO' entries predate the 'IO-<trailer>' naming and keep
+    // it. Matching the Trailer under the new id first skips this when Query 1
+    // found nothing to rename.
+    if update_io.Trailer != update_io.Schedule.TrailerID {
+        let rename_exception_query = query("
+            MATCH (:Trailer {id: $new_trailer})
+            MATCH (e:ExceptionLogEntry {trailer1: $old_trailer})
+            WHERE e.loadNum = 'IO-' + $old_trailer OR e.loadNum = 'IO'
+            SET e.trailer1 = $new_trailer,
+                e.loadNum  = CASE WHEN e.loadNum = 'IO' THEN 'IO' ELSE 'IO-' + $new_trailer END
+        ")
+        .param("old_trailer", update_io.Trailer.clone())
+        .param("new_trailer", update_io.Schedule.TrailerID.clone());
+
+        graph.run(rename_exception_query).await.map_err(|e| {
+            eprintln!("Failed to rename IO exception entry: {:?}", e);
+            Json("Failed to rename IO exception entry")
+        })?;
+    }
+
     // ── Query 2a: Remove stale Part relationships ──
     let remove_parts_query = query("
         MATCH (t:Trailer {id: $trailer})-[r:CONTAINS_PART]->(p:Part)
@@ -3150,8 +3173,11 @@ pub async fn unschedule_io(
 ) -> Result<Json<&'static str>, Json<&'static str>> {
     let graph = &state.graph;
 
+    // The IO screen files entries as 'IO-<trailer>' so the audit trail carries the
+    // trailer number; entries scheduled before that change are plain 'IO'.
     let archive_q = query("
-        MATCH (e:ExceptionLogEntry {loadNum: 'IO', trailer1: $trailer1})
+        MATCH (e:ExceptionLogEntry {trailer1: $trailer1})
+        WHERE e.loadNum = 'IO-' + $trailer1 OR e.loadNum = 'IO'
         CREATE (a:ArchivedExceptions {
             loadNum:      e.loadNum,
             dock:         e.dock,
