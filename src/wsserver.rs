@@ -21,6 +21,7 @@ use crate::structs::{
     TOPIC_PART_ALERTS, TOPIC_LIVE_SHEET, TOPIC_NEXT_SHIFT,
 };
 use crate::dock_capacity::WS_DOCK_CAPACITY;
+use crate::route_blackouts::WS_ROUTE_BLACKOUTS;
 
 #[get("/ws")]
 pub async fn ws_handler(state: &State<AppState>) -> Result<(), rocket::http::Status> {
@@ -165,10 +166,11 @@ async fn handle_connection<S>(
                                     "ping" => {
                                         continue;
                                     }
-                                    // Server-sent only (set_dock_capacity, after a save
-                                    // commits). Relayed from a client it would let anyone
-                                    // repaint every screen's capacities with made-up values.
-                                    t if t == WS_DOCK_CAPACITY => {
+                                    // Server-sent only (set_dock_capacity /
+                                    // set_route_blackouts, after a save commits). Relayed
+                                    // from a client they would let anyone repaint every
+                                    // screen's capacities or blackouts with made-up values.
+                                    t if t == WS_DOCK_CAPACITY || t == WS_ROUTE_BLACKOUTS => {
                                         println!("Dropped client-sent {} from {}", t, peer_addr);
                                         continue;
                                     }

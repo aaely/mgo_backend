@@ -14,6 +14,7 @@ mod ldap_auth;
 mod azure_auth;
 mod io_migration;
 mod dock_capacity;
+mod route_blackouts;
 use rocket::data::ToByteUnit;
 use rocket::{get, routes};
 use rocket::fs::{FileServer, NamedFile};
@@ -201,6 +202,8 @@ async fn main() {
             get_first_supplier,
             dock_capacity::get_dock_capacity,
             dock_capacity::set_dock_capacity,
+            route_blackouts::get_route_blackouts,
+            route_blackouts::set_route_blackouts,
             // One-time test -> prod IO migration; remove with io_migration.rs
             io_migration::export_io,
             io_migration::import_io,

@@ -3,8 +3,9 @@ use crate::helpers::{build_update_query, get_requested_fields};
 use crate::auth::{AuthenticatedUser, AdminOrManager, AdminOnly, AdminOrSupervisor};
 use crate::role::Role;
 use tokio_tungstenite::tungstenite::Message;
-use rocket::{State, delete, post, serde::json::Json};
+use rocket::{State, delete, post, http::Status, serde::json::Json};
 use neo4rs::{query, Node};
+use crate::route_blackouts::find_blackout;
 use std::collections::HashMap;
 
 #[post("/api/update_io", format = "json", data = "<update_io>")]
@@ -544,9 +545,17 @@ pub async fn upload_exception(
     state: &State<AppState>,
     user: AuthenticatedUser,
     role: Role,
-) -> Result<Json<Vec<ExceptionLogEntry>>, Json<&'static str>> {
+) -> Result<Json<Vec<ExceptionLogEntry>>, (Status, Json<String>)> {
     let graph = &state.graph;
     let mut created_lines = Vec::<ExceptionLogEntry>::new();
+
+    // Refuse a delivery into a route's blacked-out hour before writing anything.
+    // A real 4xx (not 200 + text) so the form sees it and keeps the entry open.
+    if let Some(msg) = find_blackout(graph, upload_exception.iter()
+        .map(|l| (l.route.as_str(), l.newTime.as_str()))).await?
+    {
+        return Err((Status::UnprocessableEntity, Json(msg)));
+    }
 
     for line in upload_exception.iter() {
         let query = query("
@@ -614,7 +623,7 @@ pub async fn upload_exception(
             Ok(mut result) => {
                 if let Ok(Some(row)) = result.next().await {
                     let e: Node = row.get("e").map_err(|_| {
-                        Json("Failed to get node from record")
+                        (Status::InternalServerError, Json("Failed to get node from record".to_string()))
                     })?;
 
                     let record = ExceptionLogEntry {
@@ -669,7 +678,7 @@ pub async fn upload_exception(
             }
             Err(e) => {
                 eprintln!("Failed to create exception log entry: {:?}", e);
-                return Err(Json("Failed to create exception log entry"));
+                return Err((Status::InternalServerError, Json("Failed to create exception log entry".to_string())));
             }
         }
     }
@@ -683,14 +692,21 @@ pub async fn upload_dycomm(
     state: &State<AppState>,
     user: AuthenticatedUser,
     role: Role,
-) -> Result<Json<Vec<DyCommLogEntry>>, Json<&'static str>> {
+) -> Result<Json<Vec<DyCommLogEntry>>, (Status, Json<String>)> {
 
     if role.0.contains("vaa") || role.0.contains("univ") {
-        return Err(Json("Forbidden"));
+        return Err((Status::Forbidden, Json("Forbidden".to_string())));
     }
 
     let graph = &state.graph;
     let mut created_lines = Vec::<DyCommLogEntry>::new();
+
+    // Refuse a delivery into a route's blacked-out hour before writing anything.
+    if let Some(msg) = find_blackout(graph, upload_dycomm.iter()
+        .map(|l| (l.route.as_str(), l.deliveryTime.as_str()))).await?
+    {
+        return Err((Status::UnprocessableEntity, Json(msg)));
+    }
 
     let updated_at = chrono::Utc::now().format("%Y-%m-%d %H:%M").to_string();
 
@@ -739,7 +755,7 @@ pub async fn upload_dycomm(
             Ok(mut result) => {
                 if let Ok(Some(row)) = result.next().await {
                     let d: Node = row.get("d").map_err(|_| {
-                        Json("Failed to get node from record")
+                        (Status::InternalServerError, Json("Failed to get node from record".to_string()))
                     })?;
 
                     let record = DyCommLogEntry {
@@ -786,7 +802,7 @@ pub async fn upload_dycomm(
             }
             Err(e) => {
                 eprintln!("Failed to create dycomm log entry: {:?}", e);
-                return Err(Json("Failed to create dycomm log entry"));
+                return Err((Status::InternalServerError, Json("Failed to create dycomm log entry".to_string())));
             }
         }
     }
