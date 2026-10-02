@@ -20,6 +20,7 @@ use crate::structs::{
     AppState, IncomingMessage, WebSocketList, WsTopics,
     TOPIC_PART_ALERTS, TOPIC_LIVE_SHEET, TOPIC_NEXT_SHIFT,
 };
+use crate::dock_capacity::WS_DOCK_CAPACITY;
 
 #[get("/ws")]
 pub async fn ws_handler(state: &State<AppState>) -> Result<(), rocket::http::Status> {
@@ -162,6 +163,13 @@ async fn handle_connection<S>(
                             Ok(incoming_message) => {
                                 match incoming_message.r#type.as_str() {
                                     "ping" => {
+                                        continue;
+                                    }
+                                    // Server-sent only (set_dock_capacity, after a save
+                                    // commits). Relayed from a client it would let anyone
+                                    // repaint every screen's capacities with made-up values.
+                                    t if t == WS_DOCK_CAPACITY => {
+                                        println!("Dropped client-sent {} from {}", t, peer_addr);
                                         continue;
                                     }
                                     // Topic opt-in/out. These are for this server only —
