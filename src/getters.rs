@@ -2174,6 +2174,69 @@ pub async fn get_rail_asl(state: &State<AppState>, _user: AuthenticatedUser) -> 
     Json(parts)
 }
 
+/// IO page's low-DOH tab: parts on the P* and U* decks at or under `max_doh` days
+/// on hand (10 unless asked otherwise), most urgent first.
+#[get("/api/get_io_low_doh?<max_doh>")]
+pub async fn get_io_low_doh(
+    max_doh: Option<f64>,
+    state:   &State<AppState>,
+    _user:   AuthenticatedUser,
+) -> Result<Json<Vec<PartASL>>, (rocket::http::Status, Json<String>)> {
+    let graph = &state.graph;
+
+    let q = neo4rs::query(
+        "MATCH (l:PartASL)
+         WHERE (toUpper(l.deck) STARTS WITH 'P' OR toUpper(l.deck) STARTS WITH 'U')
+           AND l.doh <= $max_doh
+         RETURN l
+         ORDER BY l.doh, l.deck, l.part"
+    ).param("max_doh", max_doh.unwrap_or(10.0));
+
+    let mut result = graph.execute(q).await.map_err(|e| {
+        eprintln!("get_io_low_doh error: {e}");
+        (rocket::http::Status::InternalServerError, Json("Failed to read part ASL".to_string()))
+    })?;
+
+    let mut parts: Vec<PartASL> = vec![];
+    while let Ok(Some(row)) = result.next().await {
+        if let Ok(node) = row.get::<neo4rs::Node>("l") {
+            parts.push(PartASL {
+                deck:     node.get("deck").unwrap_or_default(),
+                part:     node.get("part").unwrap_or_default(),
+                duns:     node.get("duns").unwrap_or_default(),
+                supplier: node.get("supplier").unwrap_or_default(),
+                desc:     node.get("desc").unwrap_or_default(),
+                doh:      node.get::<f64>("doh").unwrap_or_default(),
+                bank:     node.get::<i64>("bank").unwrap_or_default() as u32,
+                cbal:     node.get::<f64>("cbal").unwrap_or_default(),
+                day1:     node.get::<f64>("day1").ok(),
+                day2:     node.get::<f64>("day2").ok(),
+                day3:     node.get::<f64>("day3").ok(),
+                day4:     node.get::<f64>("day4").ok(),
+                day5:     node.get::<f64>("day5").ok(),
+                day6:     node.get::<f64>("day6").ok(),
+                day7:     node.get::<f64>("day7").ok(),
+                day8:     node.get::<f64>("day8").ok(),
+                day9:     node.get::<f64>("day9").ok(),
+                day10:    node.get::<f64>("day10").ok(),
+                day11:    node.get::<f64>("day11").ok(),
+                day12:    node.get::<f64>("day12").ok(),
+                day13:    node.get::<f64>("day13").ok(),
+                day14:    node.get::<f64>("day14").ok(),
+                day15:    node.get::<f64>("day15").ok(),
+                day16:    node.get::<f64>("day16").ok(),
+                day17:    node.get::<f64>("day17").ok(),
+                day18:    node.get::<f64>("day18").ok(),
+                day19:    node.get::<f64>("day19").ok(),
+                day20:    node.get::<f64>("day20").ok(),
+                day21:    node.get::<f64>("day21").ok(),
+            });
+        }
+    }
+
+    Ok(Json(parts))
+}
+
 /// Rail drill ASN: shipments on the rail decks. Dock normalization and status-5
 /// (received) handling stay client-side, where the staging math lives.
 #[get("/api/get_rail_asn")]
