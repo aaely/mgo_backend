@@ -171,6 +171,7 @@ async fn main() {
             update_user_position,
             get_io,
             get_delivered,
+            get_no_shows,
             delete_user,
             upload_on_deck,
             upload_part_asl,

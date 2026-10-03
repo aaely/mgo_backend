@@ -184,6 +184,30 @@ pub struct User {
     pub email: String,
 }
 
+/// A NoShowTrailer as the IO page's no-show search shows it — the node's own
+/// fields, flat, like Delivered.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct NoShowRecord {
+    pub trailer_id:      String,
+    pub no_show_date:    String,
+    pub Comments:        String,
+    pub Destination:     String,
+    pub OriginalDate:    String,
+    pub ScheduleDate:    String,
+    pub ScheduleTime:    String,
+    /// What the trailer's status was when it failed to arrive (Status is 'No Show')
+    pub ScheduledStatus: String,
+    pub Supplier:        String,
+    pub Scac:            String,
+    pub Location:        String,
+    pub CarrierEmail:    String,
+    pub ShipDate:        String,
+    pub parts:           Vec<String>,
+    pub sids:            Vec<String>,
+    pub recorded_by:     String,
+    pub recorded_at:     String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Delivered {
     pub trailer_id:    String,

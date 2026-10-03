@@ -437,6 +437,80 @@ pub async fn get_delivered(
     Ok(Json(created_lines))  // ← wrap in Json
 }
 
+/// IO page's no-show search, the counterpart of get_delivered: a trailer ID
+/// searches every no-show; otherwise a date range on no_show_date (YYYY-MM-DD).
+/// Newest first.
+#[post("/api/get_no_shows", format = "json", data = "<req>")]
+pub async fn get_no_shows(
+    req:   Json<DeliveredRequest>,
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+    role:  Role,
+) -> Result<Json<Vec<NoShowRecord>>, (rocket::http::Status, Json<String>)> {
+    use rocket::http::Status;
+
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err((Status::Forbidden, Json("Forbidden".into())));
+    }
+
+    let graph = &state.graph;
+    let trailer = req.trailer_id.trim().to_string();
+
+    let q = if !trailer.is_empty() {
+        query("
+            MATCH (n:NoShowTrailer)
+            WHERE toUpper(n.trailer_id) CONTAINS toUpper($trailer)
+            RETURN n
+            ORDER BY n.no_show_date DESC, n.trailer_id
+        ")
+        .param("trailer", trailer)
+    } else if req.date1.is_empty() || req.date2.is_empty() {
+        return Err((Status::BadRequest, Json("Provide a trailer ID or a date range".into())));
+    } else {
+        query("
+            MATCH (n:NoShowTrailer)
+            WHERE n.no_show_date >= $date1 AND n.no_show_date <= $date2
+            RETURN n
+            ORDER BY n.no_show_date DESC, n.trailer_id
+        ")
+        .param("date1", req.date1.clone())
+        .param("date2", req.date2.clone())
+    };
+
+    let mut result = graph.execute(q).await.map_err(|e| {
+        eprintln!("Failed to retrieve no-show records: {:?}", e);
+        (Status::InternalServerError, Json("Failed to retrieve no-show records".into()))
+    })?;
+
+    let mut records = Vec::new();
+    while let Ok(Some(row)) = result.next().await {
+        let n: Node = row.get("n").map_err(|_| {
+            (Status::InternalServerError, Json("Failed to read a no-show record".to_string()))
+        })?;
+        records.push(NoShowRecord {
+            trailer_id:      n.get("trailer_id").unwrap_or_default(),
+            no_show_date:    n.get("no_show_date").unwrap_or_default(),
+            Comments:        n.get("Comments").unwrap_or_default(),
+            Destination:     n.get("Destination").unwrap_or_default(),
+            OriginalDate:    n.get("OriginalDate").unwrap_or_default(),
+            ScheduleDate:    n.get("ScheduleDate").unwrap_or_default(),
+            ScheduleTime:    n.get("ScheduleTime").unwrap_or_default(),
+            ScheduledStatus: n.get("ScheduledStatus").unwrap_or_default(),
+            Supplier:        n.get("Supplier").unwrap_or_default(),
+            Scac:            n.get("Scac").unwrap_or_default(),
+            Location:        n.get("Location").unwrap_or_default(),
+            CarrierEmail:    n.get("CarrierEmail").unwrap_or_default(),
+            ShipDate:        n.get("ShipDate").unwrap_or_default(),
+            parts:           n.get("parts").unwrap_or_default(),
+            sids:            n.get("sids").unwrap_or_default(),
+            recorded_by:     n.get("recorded_by").unwrap_or_default(),
+            recorded_at:     n.get("recorded_at").unwrap_or_default(),
+        });
+    }
+
+    Ok(Json(records))
+}
+
 #[get("/api/get_trailers_grouped")]
 pub async fn get_trailers_grouped(
     state: &State<AppState>,
