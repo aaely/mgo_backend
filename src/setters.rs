@@ -2578,6 +2578,43 @@ async fn build_io_from_asn(graph: &neo4rs::Graph, data: &[PartASN]) -> Result<()
     Ok(())
 }
 
+#[post("/api/upload_part_transit", format = "json", data = "<data>")]
+pub async fn upload_part_transit(
+    data:  Json<Vec<PartTransit>>,
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+) -> Result<Json<&'static str>, Json<&'static str>> {
+    let graph = &state.graph;
+
+    // ── Clear existing transit data ──
+    let clear_query = query("MATCH (n:PartTransit) DETACH DELETE n");
+    graph.run(clear_query).await.map_err(|e| {
+        eprintln!("Failed to clear PartTransit: {:?}", e);
+        Json("Failed to clear PartTransit")
+    })?;
+
+    // A part on several routes appears once per route; keep its longest transit
+    // so the alert fires early enough for the slowest one.
+    for t in data.iter() {
+        let q = query("
+            MERGE (n:PartTransit {part: $part})
+            SET n.transitHours = CASE
+                WHEN n.transitHours IS NULL OR $transitHours > n.transitHours THEN $transitHours
+                ELSE n.transitHours
+            END
+        ")
+            .param("part",         t.part.clone())
+            .param("transitHours", t.transitHours);
+
+        graph.run(q).await.map_err(|e| {
+            eprintln!("Failed to upload PartTransit: {:?}", e);
+            Json("Failed to upload PartTransit")
+        })?;
+    }
+
+    Ok(Json("PartTransit uploaded successfully"))
+}
+
 #[post("/api/upload_part_asl", format = "json", data = "<data>")]
 pub async fn upload_part_asl(
     data:  Json<Vec<PartASL>>,

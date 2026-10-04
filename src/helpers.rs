@@ -164,6 +164,22 @@ pub async fn send_sms(to: &str, body: &str) -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
+/// Posts `text` to a Slack incoming webhook. `webhook_var` names the env var with
+/// that channel's webhook URL; when it isn't set this falls back to
+/// SLACK_WEBHOOK_URL, so a message doesn't go quiet just because its own channel
+/// hasn't been set up yet. Slack refusing the post (e.g. a revoked webhook) is
+/// an error, not a quiet success.
+pub async fn post_slack_message(webhook_var: &str, text: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let url = std::env::var(webhook_var).or_else(|_| std::env::var("SLACK_WEBHOOK_URL"))?;
+    reqwest::Client::new()
+        .post(&url)
+        .json(&serde_json::json!({ "text": text }))
+        .send()
+        .await?
+        .error_for_status()?;
+    Ok(())
+}
+
 pub fn get_requested_fields(trailer: &TrailerRecord) -> Vec<&'static str> {
     let mut fields = vec![];
     if !trailer.hour.is_empty()              { fields.push("hour") }
@@ -300,4 +316,24 @@ pub async fn recently_delivered(graph: &neo4rs::Graph) -> (std::collections::Has
         }
     };
     (delivered, cutoff)
+}
+
+/// Indexes behind the hot lookups: the per-row MERGEs in the IO builders and the
+/// part joins between the ASN, ASL and route reports. Run at startup so every
+/// environment has them. IF NOT EXISTS makes this a no-op where an equivalent
+/// index already exists, including ones created by hand under another name.
+pub async fn ensure_indexes(graph: &neo4rs::Graph) {
+    let indexes = [
+        "CREATE INDEX trailer_id      IF NOT EXISTS FOR (n:Trailer)   ON (n.id)",
+        "CREATE INDEX sid_id          IF NOT EXISTS FOR (n:SID)       ON (n.id, n.ciscoID)",
+        "CREATE INDEX part_asn_part   IF NOT EXISTS FOR (n:PartASN)   ON (n.part)",
+        "CREATE INDEX part_asl_part   IF NOT EXISTS FOR (n:PartASL)   ON (n.part)",
+        "CREATE INDEX part_route_part IF NOT EXISTS FOR (n:PartRoute) ON (n.part)",
+    ];
+    for cypher in indexes {
+        // A failed index only costs speed, so log it rather than refuse to start.
+        if let Err(e) = graph.run(query(cypher)).await {
+            eprintln!("Failed to ensure index ({cypher}): {e:?}");
+        }
+    }
 }

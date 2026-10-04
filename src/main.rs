@@ -52,6 +52,7 @@ impl AppState {
         let neo4j_user = std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
         let neo4j_pass = std::env::var("NEO4J_PASSWORD").expect("NEO4J_PASSWORD must be set");
         let graph = Graph::new(&neo4j_uri, &neo4j_user, &neo4j_pass).await.unwrap();
+        helpers::ensure_indexes(&graph).await;
 
         let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
 
@@ -177,6 +178,7 @@ async fn main() {
             upload_part_asl,
             upload_part_asn,
             upload_part_route,
+            upload_part_transit,
             upload_part_out,
             update_io,
             update_live_trailer,

@@ -1,11 +1,18 @@
 use crate::structs::*;
-use crate::helpers::{send_email, send_sms, parse_asn_arrival};
+// send_sms is only used by the part alert SMS, commented out in dispatch_alert;
+// add it back here when that's reactivated.
+use crate::helpers::{send_email, /* send_sms, */ post_slack_message, parse_asn_arrival};
 use neo4rs::{query, Node, Graph};
 use chrono::Datelike;
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// A part with no ASN saving it from an outage isn't alerted while the outage is
+/// further out than this multiple of its transit time: a load shipped now still
+/// arrives in time.
+const TRANSIT_ALERT_FACTOR: f64 = 1.25;
 
 pub async fn late_trailer_service(graph: Arc<Graph>, ws_list: WebSocketList) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
@@ -156,28 +163,52 @@ async fn dispatch_alert(
         };
 
         if should_sms {
-            let sms_to = std::env::var("ALERT_SMS").unwrap_or_else(|_| "+18777804236".to_string());
-            let msg = format!(
-                "🚨 PART ALERT [{}] {} - {} - {:.1} hrs to outage. Next ASN: {} on {}",
-                p.level.to_uppercase(), p.part, p.asl.deck, p.hours_to_out, p.next_trailer, p.next_asn_display,
+            // ── Slack, replacing the SMS and email below ──
+            // A successful post starts the part's 30-minute quiet period (should_sms
+            // above), the job the SMS send used to do. On failure it stays unmarked
+            // so the next 15-minute cycle tries again.
+            let icon = if p.level == "Shut Down" { ":rotating_light:" } else { ":warning:" };
+            let text = format!(
+                "{icon} *Part Alert: {}*\n\
+                 Part: {} | Deck: {} | Supplier: {}\n\
+                 {}\n\
+                 *{:.1} hrs to outage* | Next ASN: {} on {} | Rescue margin: {:.1} hrs",
+                p.level.to_uppercase(),
+                p.part, p.asl.deck, p.asl.supplier,
+                p.asl.desc,
+                p.hours_to_out, p.next_trailer, p.next_asn_display, p.hours_until_rescue,
             );
-            if let Err(e) = send_sms(&sms_to, &msg).await {
-                eprintln!("Failed to send SMS: {:?}", e);
-            } else {
-                alerted_parts.lock().await.insert(p.part.to_string(), now);
+            match post_slack_message("SLACK_WEBHOOK_PART_ALERTS", &text).await {
+                Ok(()) => { alerted_parts.lock().await.insert(p.part.to_string(), now); }
+                Err(e) => eprintln!("Failed to send part alert to Slack: {:?}", e),
             }
 
-            if let Ok(alert_email) = std::env::var("ALERT_EMAIL") {
-                let subject = format!("Part Alert [{}] - {}", p.level, p.part);
-                let body = format!(
-                    "Part Number: {}\nDescription: {}\nSupplier: {}\nDeck: {}\n\nAlert Level: {}\nHours to Outage: {:.1}\nNext ASN ETA: {}\nNext Trailer: {}\nHours Until Rescue: {:.1}\n",
-                    p.part, p.asl.desc, p.asl.supplier, p.asl.deck,
-                    p.level, p.hours_to_out, p.next_asn_display, p.next_trailer, p.hours_until_rescue,
-                );
-                if let Err(e) = send_email(&alert_email, &subject, body).await {
-                    eprintln!("Failed to send part alert email: {:?}", e);
-                }
-            }
+            // ── SMS: disabled in favour of Slack. To reactivate, uncomment, restore
+            //    send_sms in the imports at the top, and move the alerted_parts
+            //    insert so it isn't recorded twice. ──
+            // let sms_to = std::env::var("ALERT_SMS").unwrap_or_else(|_| "+18777804236".to_string());
+            // let msg = format!(
+            //     "🚨 PART ALERT [{}] {} - {} - {:.1} hrs to outage. Next ASN: {} on {}",
+            //     p.level.to_uppercase(), p.part, p.asl.deck, p.hours_to_out, p.next_trailer, p.next_asn_display,
+            // );
+            // if let Err(e) = send_sms(&sms_to, &msg).await {
+            //     eprintln!("Failed to send SMS: {:?}", e);
+            // } else {
+            //     alerted_parts.lock().await.insert(p.part.to_string(), now);
+            // }
+
+            // ── Email: disabled in favour of Slack. Uncomment to reactivate. ──
+            // if let Ok(alert_email) = std::env::var("ALERT_EMAIL") {
+            //     let subject = format!("Part Alert [{}] - {}", p.level, p.part);
+            //     let body = format!(
+            //         "Part Number: {}\nDescription: {}\nSupplier: {}\nDeck: {}\n\nAlert Level: {}\nHours to Outage: {:.1}\nNext ASN ETA: {}\nNext Trailer: {}\nHours Until Rescue: {:.1}\n",
+            //         p.part, p.asl.desc, p.asl.supplier, p.asl.deck,
+            //         p.level, p.hours_to_out, p.next_asn_display, p.next_trailer, p.hours_until_rescue,
+            //     );
+            //     if let Err(e) = send_email(&alert_email, &subject, body).await {
+            //         eprintln!("Failed to send part alert email: {:?}", e);
+            //     }
+            // }
         }
     }
 
@@ -344,6 +375,19 @@ pub async fn part_monitoring_service(
                 continue;
             }
         }
+        // Missing report or a part not on it just means no transit gate below.
+        let mut transit_map: HashMap<String, f64> = HashMap::new();
+        match graph.execute(query("MATCH (n:PartTransit) RETURN n.part AS part, n.transitHours AS hours")).await {
+            Ok(mut result) => {
+                while let Ok(Some(row)) = result.next().await {
+                    if let (Ok(part), Ok(hours)) = (row.get::<String>("part"), row.get::<f64>("hours")) {
+                        transit_map.insert(part, hours);
+                    }
+                }
+            }
+            Err(e) => eprintln!("Failed to fetch PartTransit: {:?}", e),
+        }
+
         for asns in asn_map.values_mut() {
             asns.sort_by(|a, b| {
                 let a_dt = parse_asn_arrival(&a.0, &a.1);
@@ -462,7 +506,21 @@ pub async fn part_monitoring_service(
                 // Otherwise: alert if the eventual outage is close (<=6h) OR the
                 // ASN saving from the current outage cleared it by only a thin
                 // margin (<=6h). Drop entirely otherwise.
-                let level = if asns_for_part.is_empty() {
+                //
+                // With no ASN arriving before the outage, a load shipped now can
+                // still make it while the outage is further out than
+                // TRANSIT_ALERT_FACTOR x the part's transit time — so hold the
+                // alert until then. Parts missing from the transit report alert
+                // as before.
+                let has_saving_asn = asns_for_part.iter().any(|(eda, eta, _, _)| {
+                    parse_asn_arrival(eda, eta).is_some_and(|arrival| arrival < current_downtime_dt)
+                });
+                let time_to_ship = !has_saving_asn && transit_map.get(part)
+                    .is_some_and(|&transit| final_hours_to_out > TRANSIT_ALERT_FACTOR * transit);
+
+                let level = if time_to_ship {
+                    None
+                } else if asns_for_part.is_empty() {
                     Some("Shut Down")
                 } else {
                     worse_level(classify(final_hours_to_out), rescue_margin.and_then(classify))

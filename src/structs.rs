@@ -521,6 +521,14 @@ pub struct PartASN {
     pub country:      String,
 }
 
+/// A row of the transit time report: how many hours a load of this part takes to
+/// arrive once it ships.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct PartTransit {
+    pub part:         String,
+    pub transitHours: f64,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct RouteDelivering {
     pub trailer: String,
