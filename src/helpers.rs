@@ -329,6 +329,7 @@ pub async fn ensure_indexes(graph: &neo4rs::Graph) {
         "CREATE INDEX part_asn_part   IF NOT EXISTS FOR (n:PartASN)   ON (n.part)",
         "CREATE INDEX part_asl_part   IF NOT EXISTS FOR (n:PartASL)   ON (n.part)",
         "CREATE INDEX part_route_part IF NOT EXISTS FOR (n:PartRoute) ON (n.part)",
+        "CREATE INDEX part_transit_part IF NOT EXISTS FOR (n:PartTransit) ON (n.part)",
     ];
     for cypher in indexes {
         // A failed index only costs speed, so log it rather than refuse to start.
