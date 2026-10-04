@@ -1,5 +1,5 @@
 use crate::structs::*;
-use crate::helpers::{build_update_query, get_requested_fields};
+use crate::helpers::{build_update_query, get_requested_fields, recently_delivered};
 use crate::auth::{AuthenticatedUser, AdminOrManager, AdminOnly, AdminOrSupervisor};
 use crate::role::Role;
 use tokio_tungstenite::tungstenite::Message;
@@ -412,35 +412,7 @@ pub async fn upload_in_transit(
 ) -> Result<Json<&'static str>, Json<&'static str>> {
     let graph = &state.graph;
 
-    // ── Drop trailers already delivered in the last month ──
-    // The GMAP report keeps listing containers after they arrive, so anything with a
-    // recent DeliveredTrailer record is skipped rather than rebuilt from the report.
-    // delivery_date is stored as YYYY-MM-DD, so it compares correctly as text.
-    let cutoff = (chrono::Utc::now() - chrono::Duration::days(30))
-        .format("%Y-%m-%d")
-        .to_string();
-
-    let delivered_q = query("
-        MATCH (d:DeliveredTrailer)
-        WHERE d.delivery_date >= $cutoff
-        RETURN collect(DISTINCT d.trailer_id) AS trailers
-    ")
-    .param("cutoff", cutoff.clone());
-
-    let delivered: std::collections::HashSet<String> = match graph.execute(delivered_q).await {
-        Ok(mut result) => match result.next().await {
-            Ok(Some(row)) => row
-                .get::<Vec<String>>("trailers")
-                .unwrap_or_default()
-                .into_iter()
-                .collect(),
-            _ => std::collections::HashSet::new(),
-        },
-        Err(e) => {
-            eprintln!("Failed to load recently delivered trailers: {:?}", e);
-            std::collections::HashSet::new()
-        }
-    };
+    let (delivered, cutoff) = recently_delivered(graph).await;
 
     // Filter once up front so Schedule nodes aren't created for skipped trailers either
     let lines: Vec<&InTransit> = upload_in_transit
@@ -2502,7 +2474,108 @@ pub async fn upload_part_asn(
         })?;
     }
 
+    build_io_from_asn(graph, &data).await?;
+
     Ok(Json("PartASN uploaded successfully"))
+}
+
+/// Builds IO containers (Trailer -> SID -> Part, Schedule) from the ASN, the same
+/// shape upload_in_transit builds from the GMAP report. Only stat 4 lines for U*
+/// and P* decks are taken. The ASN trailer carries 4 characters ahead of the
+/// container number, dropped here so the id matches the in-transit report's.
+///
+/// Additive: an existing schedule keeps what operators entered. Supplier is the
+/// supplier of the trailer's lowest-DOH part (PartRoute -> PartASL, as
+/// get_first_supplier picks it) — the IO screen only needs one to name.
+async fn build_io_from_asn(graph: &neo4rs::Graph, data: &[PartASN]) -> Result<(), Json<&'static str>> {
+    let (delivered, cutoff) = recently_delivered(graph).await;
+
+    let lines: Vec<(String, &PartASN)> = data
+        .iter()
+        .filter(|a| a.status == Some(4))
+        .filter(|a| a.deck.to_uppercase().starts_with(['U', 'P']))
+        .map(|a| (a.trailer.chars().skip(4).collect::<String>().trim().to_string(), a))
+        .filter(|(t, _)| !t.is_empty() && !delivered.contains(t))
+        .collect();
+
+    println!("upload_part_asn: {} IO lines, delivered since {} skipped", lines.len(), cutoff);
+
+    // ── Trailer → SID → Part. ciscoID is always 18008 on the ASN, so these land
+    //    on the same SID nodes upload_in_transit would create. ──
+    for (trailer, asn) in lines.iter() {
+        let q = query("
+            MERGE (t:Trailer {id: $trailer})
+            MERGE (sid:SID {id: $sid, ciscoID: '18008'})
+            MERGE (t)-[:HAS_SID]->(sid)
+            MERGE (sid)-[:BELONGS_TO]->(t)
+            MERGE (sid)-[:HAS_PART]->(p:Part {number: $part, quantity: $quantity, duns: $duns})
+            MERGE (t)-[:CONTAINS_PART]->(p)
+        ")
+        .param("trailer",  trailer.clone())
+        .param("sid",      asn.sid.clone())
+        .param("part",     asn.part.clone())
+        .param("quantity", asn.quantity.unwrap_or(0.0) as i64)
+        .param("duns",     asn.duns.clone());
+
+        graph.run(q).await.map_err(|e| {
+            eprintln!("Failed to merge ASN trailer/sid/part nodes: {:?}", e);
+            Json("Failed to merge ASN trailer/sid/part nodes")
+        })?;
+    }
+
+    // ── One Schedule per trailer: destination from the first line's dock, SCAC
+    //    from the first line, earliest non-blank ship date ──
+    let mut schedules: HashMap<String, (String, String, String)> = HashMap::new();
+    for (trailer, asn) in lines.iter() {
+        let entry = schedules.entry(trailer.clone()).or_insert_with(|| {
+            let destination = if asn.dock.contains('V') { "Arlington, TX" } else { "Grand Prairie, TX" };
+            (destination.to_string(), asn.scac.clone(), String::new())
+        });
+        if !asn.shipDate.is_empty() && (entry.2.is_empty() || asn.shipDate < entry.2) {
+            entry.2 = asn.shipDate.clone();
+        }
+    }
+
+    for (trailer, (destination, scac, ship_date)) in schedules.iter() {
+        let q = query("
+            MATCH (t:Trailer {id: $trailer})
+            MERGE (t)-[:HAS_SCHEDULE]->(s:Schedule)
+            ON CREATE SET
+                s.TrailerID    = t.id,
+                s.Destination  = $destination,
+                s.Supplier     = '',
+                s.OriginalDate = '',
+                s.ScheduleDate = '',
+                s.ScheduleTime = '',
+                s.Comments     = '',
+                s.Status       = '',
+                s.Scac         = $scac,
+                s.Location     = '',
+                s.ShipDate     = $ship_date
+            ON MATCH SET
+                s.Destination  = CASE WHEN coalesce(s.Destination, '') = '' THEN $destination ELSE s.Destination END,
+                s.Scac         = CASE WHEN coalesce(s.Scac, '')        = '' THEN $scac        ELSE s.Scac        END,
+                s.ShipDate     = CASE WHEN $ship_date = '' THEN coalesce(s.ShipDate, '') ELSE $ship_date END
+            WITH t, s
+            OPTIONAL MATCH (t)-[:CONTAINS_PART]->(p:Part)
+            OPTIONAL MATCH (r:PartRoute {part: p.number})
+            OPTIONAL MATCH (a:PartASL {part: r.part}) WHERE a.doh IS NOT NULL
+            WITH s, a ORDER BY a.doh ASC, a.part ASC
+            WITH s, head(collect(a.supplier)) AS supplier
+            SET s.Supplier = coalesce(supplier, s.Supplier, '')
+        ")
+        .param("trailer",     trailer.clone())
+        .param("destination", destination.clone())
+        .param("scac",        scac.clone())
+        .param("ship_date",   ship_date.clone());
+
+        graph.run(q).await.map_err(|e| {
+            eprintln!("Failed to create/update ASN schedule node: {:?}", e);
+            Json("Failed to create/update ASN schedule node")
+        })?;
+    }
+
+    Ok(())
 }
 
 #[post("/api/upload_part_asl", format = "json", data = "<data>")]

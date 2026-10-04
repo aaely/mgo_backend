@@ -269,3 +269,35 @@ pub fn check_fields(role: &str, fields: &[&str]) -> Result<(), Vec<String>> {
         .collect();
     if denied.is_empty() { Ok(()) } else { Err(denied) }
 }
+/// Trailers with a DeliveredTrailer record in the last month, and the cutoff date.
+/// The GMAP report and the ASN keep listing containers after they arrive, so the
+/// IO builders skip these rather than rebuild them. delivery_date is stored as
+/// YYYY-MM-DD, so it compares correctly as text.
+pub async fn recently_delivered(graph: &neo4rs::Graph) -> (std::collections::HashSet<String>, String) {
+    let cutoff = (Utc::now() - Duration::days(30))
+        .format("%Y-%m-%d")
+        .to_string();
+
+    let delivered_q = query("
+        MATCH (d:DeliveredTrailer)
+        WHERE d.delivery_date >= $cutoff
+        RETURN collect(DISTINCT d.trailer_id) AS trailers
+    ")
+    .param("cutoff", cutoff.clone());
+
+    let delivered = match graph.execute(delivered_q).await {
+        Ok(mut result) => match result.next().await {
+            Ok(Some(row)) => row
+                .get::<Vec<String>>("trailers")
+                .unwrap_or_default()
+                .into_iter()
+                .collect(),
+            _ => std::collections::HashSet::new(),
+        },
+        Err(e) => {
+            eprintln!("Failed to load recently delivered trailers: {:?}", e);
+            std::collections::HashSet::new()
+        }
+    };
+    (delivered, cutoff)
+}
