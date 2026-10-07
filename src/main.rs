@@ -181,6 +181,7 @@ async fn main() {
             upload_part_transit,
             upload_part_out,
             update_io,
+            update_io_schedule,
             update_live_trailer,
             get_staged_trailers,
             get_past_shift,

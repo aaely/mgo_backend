@@ -403,6 +403,80 @@ pub async fn upload_lms(
     Ok(Json(created_lines))
 }
 
+/// Writes only the Schedule fields sent — for IO page edits that don't involve
+/// SIDs or parts (Confirm, the inline Delay / Issue notes). update_io reconciles
+/// SIDs and parts against whatever the caller holds, so a stale or partial row
+/// there deletes real links; this route can't.
+#[post("/api/update_io_schedule", format = "json", data = "<patch>")]
+pub async fn update_io_schedule(
+    patch: Json<IoSchedulePatch>,
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+    role:  Role,
+) -> Result<Json<Schedule>, (Status, Json<String>)> {
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err((Status::Forbidden, Json("Forbidden".into())));
+    }
+
+    // Property names come from this fixed list, never from the request.
+    let fields: [(&'static str, &Option<String>); 11] = [
+        ("OriginalDate", &patch.OriginalDate),
+        ("ScheduleDate", &patch.ScheduleDate),
+        ("ScheduleTime", &patch.ScheduleTime),
+        ("Comments",     &patch.Comments),
+        ("Destination",  &patch.Destination),
+        ("Status",       &patch.Status),
+        ("Supplier",     &patch.Supplier),
+        ("Scac",         &patch.Scac),
+        ("Location",     &patch.Location),
+        ("CarrierEmail", &patch.CarrierEmail),
+        ("ShipDate",     &patch.ShipDate),
+    ];
+    let sent: Vec<(&'static str, String)> = fields.iter()
+        .filter_map(|(name, v)| v.as_ref().map(|v| (*name, v.clone())))
+        .collect();
+    if sent.is_empty() {
+        return Err((Status::BadRequest, Json("Nothing to update".into())));
+    }
+
+    let set_clause = sent.iter().map(|(name, _)| format!("s.{name} = ${name}")).collect::<Vec<_>>().join(", ");
+    let mut q = query(&format!("
+        MATCH (t:Trailer {{id: $trailer}})-[:HAS_SCHEDULE]->(s:Schedule)
+        SET {set_clause}
+        RETURN s
+    ")).param("trailer", patch.Trailer.clone());
+    for (name, value) in sent {
+        q = q.param(name, value);
+    }
+
+    let mut result = state.graph.execute(q).await.map_err(|e| {
+        eprintln!("Failed to update IO schedule for {}: {:?}", patch.Trailer, e);
+        (Status::InternalServerError, Json("Failed to update schedule".to_string()))
+    })?;
+    let Ok(Some(row)) = result.next().await else {
+        return Err((Status::NotFound, Json(format!("Trailer {} not found", patch.Trailer))));
+    };
+    let s: Node = row.get("s").map_err(|_| {
+        (Status::InternalServerError, Json("Failed to read updated schedule".to_string()))
+    })?;
+
+    // The whole schedule as saved, so the page can merge it into its row
+    Ok(Json(Schedule {
+        TrailerID:    s.get("TrailerID").unwrap_or_default(),
+        OriginalDate: s.get("OriginalDate").unwrap_or_default(),
+        ScheduleDate: s.get("ScheduleDate").unwrap_or_default(),
+        ScheduleTime: s.get("ScheduleTime").unwrap_or_default(),
+        Comments:     s.get("Comments").unwrap_or_default(),
+        Destination:  s.get("Destination").unwrap_or_default(),
+        Status:       s.get("Status").unwrap_or_default(),
+        Supplier:     s.get("Supplier").unwrap_or_default(),
+        Scac:         s.get("Scac").unwrap_or_default(),
+        Location:     s.get("Location").unwrap_or_default(),
+        CarrierEmail: s.get("CarrierEmail").unwrap_or_default(),
+        ShipDate:     s.get("ShipDate").unwrap_or_default(),
+    }))
+}
+
 #[post("/api/upload_in_transit", format = "json", data = "<upload_in_transit>")]
 pub async fn upload_in_transit(
     upload_in_transit: Json<Vec<InTransit>>,

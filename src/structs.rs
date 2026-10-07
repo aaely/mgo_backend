@@ -53,6 +53,26 @@ pub struct Schedule {
     #[serde(default)] pub ShipDate: String,
 }
 
+/// A partial update to an IO trailer's Schedule (update_io_schedule): only the
+/// fields sent are written, and SIDs and parts are never touched. TrailerID isn't
+/// here — a rename goes through update_io, which also renames the trailer's
+/// Exception Log entry.
+#[derive(Debug, Deserialize)]
+pub struct IoSchedulePatch {
+    pub Trailer: String,
+    #[serde(default)] pub OriginalDate: Option<String>,
+    #[serde(default)] pub ScheduleDate: Option<String>,
+    #[serde(default)] pub ScheduleTime: Option<String>,
+    #[serde(default)] pub Comments:     Option<String>,
+    #[serde(default)] pub Destination:  Option<String>,
+    #[serde(default)] pub Status:       Option<String>,
+    #[serde(default)] pub Supplier:     Option<String>,
+    #[serde(default)] pub Scac:         Option<String>,
+    #[serde(default)] pub Location:     Option<String>,
+    #[serde(default)] pub CarrierEmail: Option<String>,
+    #[serde(default)] pub ShipDate:     Option<String>,
+}
+
 #[derive(Serialize, Deserialize, PartialEq, Default, Debug)]
 pub struct LMSRecord {
     pub load_no:               String,
