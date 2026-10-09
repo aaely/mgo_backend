@@ -130,6 +130,18 @@ pub struct IOResponse {
     #[serde(default)] pub SidParts: Option<Vec<SidPart>>,
 }
 
+/// update_live_trailer's body: the trailer, plus the fields this edit means to
+/// change. Only those are compared and written, so a stale copy of the rest of
+/// the row can't overwrite another user's change or trip a permission the edit
+/// never used. Sent without the list, every field is compared.
+#[derive(Debug, Deserialize)]
+pub struct TrailerUpdate {
+    #[serde(flatten)]
+    pub trailer: TrailerRecord,
+    #[serde(default)]
+    pub changedFields: Vec<String>,
+}
+
 #[derive(Serialize, Deserialize, PartialEq, Default, Debug)]
 pub struct TrailerRecord {
     #[serde(default)] pub hour: String,
@@ -162,6 +174,7 @@ pub struct TrailerRecord {
     #[serde(default)] pub statusOX: String,
     #[serde(default)] pub stat: String,
     #[serde(default)] pub loadComments: String,
+    #[serde(default)] pub dockComments: String,
     #[serde(default)] pub ryderComments: String,
     pub gmComments: Option<String>,
     pub lowestDoh: Option<String>,
@@ -497,28 +510,6 @@ pub struct UnassignDeckRequest {
     pub day_key: String,
     pub shift:   String,
     pub deck:    String,
-}
-
-pub fn get_allowed_fields(role: &str) -> Option<Vec<&'static str>> {
-    let mut permissions: HashMap<&str, Vec<&'static str>> = HashMap::new();
-    
-    permissions.insert("admin", vec!["*"]);
-    permissions.insert("supervisor", vec![
-        "hour", "dockCode", "adjustedStartTime", "scheduleEndDate",
-        "scheduleEndTime", "scac", "statusOX", "stat", "trailer1", "trailer2",
-        "gateArrivalTime", "actualStartTime", "actualEndTime", "door", "doorArrivalTime",
-        "gateArrivalDate", "doorArrivalDate", "actualStartDate", "actualEndDate"
-    ]);
-    permissions.insert("clerk", vec![
-        "gateArrivalTime", "actualStartTime", "actualEndTime",
-        "door", "doorArrivalTime", "dockComments",
-        "gateArrivalDate", "doorArrivalDate", "actualStartDate", "actualEndDate"
-    ]);
-    permissions.insert("receiving", vec!["statusOX", "stat"]);
-    permissions.insert("mfu", vec!["ryderComments"]);
-    permissions.insert("security", vec!["gateArrivalTime", "gateArrivalDate", "gmComments"]);
-
-    permissions.get(role).cloned()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]

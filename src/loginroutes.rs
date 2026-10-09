@@ -241,7 +241,7 @@ pub async fn sso_login(
 
     ldap.unbind().await.ok();
 
-    const ROLE_PRIORITY: &[&str] = &["admin", "manager", "supervisor", "vaa", "univ", "read"];
+    const ROLE_PRIORITY: &[&str] = &["admin", "manager", "supervisor", "receiving", "dock", "vaa", "univ", "security", "mfu", "read"];
 
     let role = results.into_iter()
         .next()

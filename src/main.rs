@@ -14,6 +14,7 @@ mod ldap_auth;
 mod azure_auth;
 mod io_migration;
 mod dock_capacity;
+mod permissions;
 mod route_blackouts;
 use rocket::data::ToByteUnit;
 use rocket::{get, routes};
@@ -205,6 +206,7 @@ async fn main() {
             get_scan_routes,
             get_part_routes,
             get_first_supplier,
+            permissions::my_permissions,
             dock_capacity::get_dock_capacity,
             dock_capacity::set_dock_capacity,
             route_blackouts::get_route_blackouts,

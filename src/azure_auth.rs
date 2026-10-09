@@ -28,14 +28,18 @@ pub struct AzureUser {
     pub role: String,
 }
 
-// Azure AD group Object ID (GUID) -> app role. Same four roles and same
-// priority order as ldap_auth.rs: first match wins, so this is ordered
-// most-privileged first.
-const GROUP_ROLE_ENV_VARS: [(&str, &str); 4] = [
+// Azure AD group Object ID (GUID) -> app role. Same roles and priority order as
+// ldap_auth.rs: first match wins. A group whose env var isn't set is skipped.
+const GROUP_ROLE_ENV_VARS: [(&str, &str); 9] = [
     ("AZURE_GROUP_ADMIN",     "admin"),
     ("AZURE_GROUP_MANAGER",   "manager"),
     ("AZURE_GROUP_RECEIVING", "receiving"),
+    ("AZURE_GROUP_DOCK",      "dock"),
+    ("AZURE_GROUP_VAA",       "vaa"),
+    ("AZURE_GROUP_UNIV",      "univ"),
+    ("AZURE_GROUP_SECURITY",  "security"),
     ("AZURE_GROUP_MFU",       "mfu"),
+    ("AZURE_GROUP_FLOATER",   "floater"),
 ];
 
 fn role_from_groups(groups: &[String]) -> Option<String> {

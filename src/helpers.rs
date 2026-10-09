@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use chrono::{DateTime, Duration, NaiveDate, Utc, Timelike, Datelike};
 use neo4rs::query;
-use crate::structs::{TrailerRecord, get_allowed_fields};
+use crate::structs::TrailerRecord;
 
 // The OpenShift cluster this runs on isn't necessarily in US Central time,
 // but the business logic (shift windows, the 22:00 day boundary, weekend
@@ -199,64 +199,49 @@ pub fn get_requested_fields(trailer: &TrailerRecord) -> Vec<&'static str> {
     fields
 }
 
-// `label` is resolved from the node itself, never from request data — early
-// arrivals are worked off Next Shift, so the row may still be a StagedTrailer.
-pub fn build_update_query(role: &str, trailer: &TrailerRecord, label: &str) -> neo4rs::Query {
-    let allowed = get_allowed_fields(role).unwrap_or_default();
-    let is_admin = allowed.contains(&"*");
+/// A TrailerRecord field by name, for the fields update_live_trailer can write
+/// (permissions::editable_fields).
+pub fn trailer_field(t: &TrailerRecord, field: &str) -> String {
+    match field {
+        "hour"              => t.hour.clone(),
+        "dockCode"          => t.dockCode.clone(),
+        "scac"              => t.scac.clone(),
+        "trailer1"          => t.trailer1.clone(),
+        "trailer2"          => t.trailer2.clone(),
+        "adjustedStartTime" => t.adjustedStartTime.clone(),
+        "scheduleEndDate"   => t.scheduleEndDate.clone(),
+        "scheduleEndTime"   => t.scheduleEndTime.clone(),
+        "gateArrivalTime"   => t.gateArrivalTime.clone(),
+        "gateArrivalDate"   => t.gateArrivalDate.clone(),
+        "doorArrivalTime"   => t.doorArrivalTime.clone(),
+        "doorArrivalDate"   => t.doorArrivalDate.clone(),
+        "door"              => t.door.clone(),
+        "actualStartTime"   => t.actualStartTime.clone(),
+        "actualStartDate"   => t.actualStartDate.clone(),
+        "actualEndTime"     => t.actualEndTime.clone(),
+        "actualEndDate"     => t.actualEndDate.clone(),
+        "statusOX"          => t.statusOX.clone(),
+        "stat"              => t.stat.clone(),
+        "ryderComments"     => t.ryderComments.clone(),
+        "gmComments"        => t.gmComments.clone().unwrap_or_default(),
+        "dockComments"      => t.dockComments.clone(),
+        "loadComments"      => t.loadComments.clone(),
+        _                   => String::new(),
+    }
+}
 
-    let mut sets = vec![];
-    if is_admin || allowed.contains(&"hour")              { sets.push("t.hour = $hour") }
-    if is_admin || allowed.contains(&"dockCode")          { sets.push("t.dockCode = $dockCode") }
-    if is_admin || allowed.contains(&"scac")              { sets.push("t.scac = $scac") }
-    if is_admin || allowed.contains(&"trailer1")          { sets.push("t.trailer1 = $trailer1") }
-    if is_admin || allowed.contains(&"trailer2")          { sets.push("t.trailer2 = $trailer2") }
-    if is_admin || allowed.contains(&"adjustedStartTime") { sets.push("t.adjustedStartTime = $adjustedStartTime") }
-    if is_admin || allowed.contains(&"scheduleEndDate")   { sets.push("t.scheduleEndDate = $scheduleEndDate") }
-    if is_admin || allowed.contains(&"scheduleEndTime")   { sets.push("t.scheduleEndTime = $scheduleEndTime") }
-    if is_admin || allowed.contains(&"gateArrivalTime")   { sets.push("t.gateArrivalTime = $gateArrivalTime") }
-    if is_admin || allowed.contains(&"actualStartTime")   { sets.push("t.actualStartTime = $actualStartTime") }
-    if is_admin || allowed.contains(&"actualEndTime")     { sets.push("t.actualEndTime = $actualEndTime") }
-    if is_admin || allowed.contains(&"gateArrivalDate")   { sets.push("t.gateArrivalDate = $gateArrivalDate") }
-    if is_admin || allowed.contains(&"doorArrivalDate")   { sets.push("t.doorArrivalDate = $doorArrivalDate") }
-    if is_admin || allowed.contains(&"actualStartDate")   { sets.push("t.actualStartDate = $actualStartDate") }
-    if is_admin || allowed.contains(&"actualEndDate")     { sets.push("t.actualEndDate = $actualEndDate") }
-    if is_admin || allowed.contains(&"statusOX")          { sets.push("t.statusOX = $statusOX") }
-    if is_admin || allowed.contains(&"stat")              { sets.push("t.stat = $stat") }
-    if is_admin || allowed.contains(&"ryderComments")     { sets.push("t.ryderComments = $ryderComments") }
-    if is_admin || allowed.contains(&"gmComments")        { sets.push("t.gmComments = $gmComments") }
-    if is_admin || allowed.contains(&"door")              { sets.push("t.door = $door") }
-    if is_admin || allowed.contains(&"doorArrivalTime")   { sets.push("t.doorArrivalTime = $doorArrivalTime") }
-
-    let cypher = format!(
-        "MATCH (t:{} {{uuid: $uuid}}) SET {} RETURN t",
-        label,
-        sets.join(", ")
-    );
-
-    query(&cypher)
-        .param("uuid",              trailer.uuid.clone())
-        .param("hour",              trailer.hour.clone())
-        .param("dockCode",          trailer.dockCode.clone())
-        .param("scac",              trailer.scac.clone())
-        .param("trailer1",          trailer.trailer1.clone())
-        .param("trailer2",          trailer.trailer2.clone())
-        .param("adjustedStartTime", trailer.adjustedStartTime.clone())
-        .param("scheduleEndDate",   trailer.scheduleEndDate.clone())
-        .param("scheduleEndTime",   trailer.scheduleEndTime.clone())
-        .param("gateArrivalTime",   trailer.gateArrivalTime.clone())
-        .param("actualStartTime",   trailer.actualStartTime.clone())
-        .param("actualEndTime",     trailer.actualEndTime.clone())
-        .param("gateArrivalDate",   trailer.gateArrivalDate.clone())
-        .param("doorArrivalDate",   trailer.doorArrivalDate.clone())
-        .param("actualStartDate",   trailer.actualStartDate.clone())
-        .param("actualEndDate",     trailer.actualEndDate.clone())
-        .param("statusOX",          trailer.statusOX.clone())
-        .param("stat",              trailer.stat.clone())
-        .param("ryderComments",     trailer.ryderComments.clone())
-        .param("gmComments",        trailer.gmComments.clone().unwrap_or_default())
-        .param("door",              trailer.door.clone())
-        .param("doorArrivalTime",   trailer.doorArrivalTime.clone())
+/// SETs exactly `fields` — the ones this request changed and the caller may write
+/// — so fields the caller didn't touch keep whatever another user saved meanwhile.
+/// `label` is resolved from the node and `fields` come from
+/// permissions::editable_fields; neither comes from request data.
+pub fn build_update_query(trailer: &TrailerRecord, label: &str, fields: &[&str]) -> neo4rs::Query {
+    let sets = fields.iter().map(|f| format!("t.{f} = ${f}")).collect::<Vec<_>>().join(", ");
+    let mut q = query(&format!("MATCH (t:{label} {{uuid: $uuid}}) SET {sets} RETURN t"))
+        .param("uuid", trailer.uuid.clone());
+    for f in fields {
+        q = q.param(f, trailer_field(trailer, f));
+    }
+    q
 }
 
 pub fn get_event_type(field: &str) -> &'static str {
@@ -266,7 +251,8 @@ pub fn get_event_type(field: &str) -> &'static str {
         "gateArrivalTime" | "actualStartTime" | "actualEndTime" |
         "gateArrivalDate" | "doorArrivalDate" | "actualStartDate" | "actualEndDate" |
         "statusOX" | "stat" | "ryderComments" | "gmComments" |
-        "door" | "doorArrivalTime" | "LiveAdd" | "StagedAdd" => "Trailer Updates",
+        "door" | "doorArrivalTime" | "dockComments" | "loadComments" |
+        "LiveAdd" | "StagedAdd" => "Trailer Updates",
         "shift_rolled"                          => "Shift Roll",
         "hot_part_created" | "hot_part_closed"  => "Hot Parts",
         "exception_uploaded" | "dycomm_uploaded" => "Uploads",
@@ -274,17 +260,6 @@ pub fn get_event_type(field: &str) -> &'static str {
     }
 }
 
-pub fn check_fields(role: &str, fields: &[&str]) -> Result<(), Vec<String>> {
-    let allowed = get_allowed_fields(role).unwrap_or_default();
-    if allowed.contains(&"*") {
-        return Ok(());
-    }
-    let denied: Vec<String> = fields.iter()
-        .filter(|f| !allowed.contains(f))
-        .map(|f| f.to_string())
-        .collect();
-    if denied.is_empty() { Ok(()) } else { Err(denied) }
-}
 /// Trailers with a DeliveredTrailer record in the last month, and the cutoff date.
 /// The GMAP report and the ASN keep listing containers after they arrive, so the
 /// IO builders skip these rather than rebuild them. delivery_date is stored as

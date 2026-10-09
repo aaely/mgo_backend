@@ -28,12 +28,19 @@ pub struct LdapUser {
 }
 
 // AD group DN -> app role. Priority order matters: if a user is a member of
-// multiple mapped groups, the highest-privilege one wins.
-const GROUP_ROLE_ENV_VARS: [(&str, &str); 4] = [
-    ("LDAP_GROUP_ADMIN",   "admin"),
-    ("LDAP_GROUP_MANAGER", "manager"),
-    ("LDAP_GROUP_FLOATER", "floater"),
-    ("LDAP_GROUP_MFU",     "mfu"),
+// multiple mapped groups, the first one listed wins. Keep in step with
+// azure_auth.rs; the roles' Live Sheet / Next Shift rights are in permissions.rs.
+// A group whose env var isn't set is skipped.
+const GROUP_ROLE_ENV_VARS: [(&str, &str); 9] = [
+    ("LDAP_GROUP_ADMIN",     "admin"),
+    ("LDAP_GROUP_MANAGER",   "manager"),
+    ("LDAP_GROUP_RECEIVING", "receiving"),
+    ("LDAP_GROUP_DOCK",      "dock"),
+    ("LDAP_GROUP_VAA",       "vaa"),
+    ("LDAP_GROUP_UNIV",      "univ"),
+    ("LDAP_GROUP_SECURITY",  "security"),
+    ("LDAP_GROUP_MFU",       "mfu"),
+    ("LDAP_GROUP_FLOATER",   "floater"),
 ];
 
 fn role_from_groups(member_of: &[String]) -> Option<String> {

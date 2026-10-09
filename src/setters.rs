@@ -1,5 +1,6 @@
 use crate::structs::*;
-use crate::helpers::{build_update_query, get_requested_fields, recently_delivered};
+use crate::helpers::{build_update_query, get_requested_fields, recently_delivered, trailer_field};
+use crate::permissions;
 use crate::auth::{AuthenticatedUser, AdminOrManager, AdminOnly, AdminOrSupervisor};
 use crate::role::Role;
 use tokio_tungstenite::tungstenite::Message;
@@ -1404,10 +1405,14 @@ pub async fn push_add_on (
     state:  &State<AppState>,
     user:   AuthenticatedUser,
     role:   Role,
-) -> Result<Json<TrailerRecord>, Json<&'static str>> {
+) -> Result<Json<TrailerRecord>, (Status, Json<String>)> {
 
-    if role.0.contains("vaa") || role.0.contains("univ") {
-        return Err(Json("Forbidden"));
+    // Admin, manager, dock, VAA and Universal — the last two on their own dock only
+    if !permissions::can(&role.0, "addOn") {
+        return Err((Status::Forbidden, Json(format!("Your role ({}) can't add trailers", role.0))));
+    }
+    if !permissions::dock_allowed(&role.0, &add_on.dockCode) {
+        return Err((Status::Forbidden, Json(format!("Your role ({}) can only add trailers to its own dock", role.0))));
     }
 
     create_add_on(
@@ -1429,10 +1434,14 @@ pub async fn push_staged_add_on (
     state:  &State<AppState>,
     user:   AuthenticatedUser,
     role:   Role,
-) -> Result<Json<TrailerRecord>, Json<&'static str>> {
+) -> Result<Json<TrailerRecord>, (Status, Json<String>)> {
 
-    if role.0.contains("vaa") || role.0.contains("univ") {
-        return Err(Json("Forbidden"));
+    // Admin, manager, dock, VAA and Universal — the last two on their own dock only
+    if !permissions::can(&role.0, "addOn") {
+        return Err((Status::Forbidden, Json(format!("Your role ({}) can't add trailers", role.0))));
+    }
+    if !permissions::dock_allowed(&role.0, &add_on.dockCode) {
+        return Err((Status::Forbidden, Json(format!("Your role ({}) can only add trailers to its own dock", role.0))));
     }
 
     create_add_on(
@@ -1460,7 +1469,7 @@ async fn create_add_on(
     add_on: TrailerRecord,
     state:  &State<AppState>,
     username: &str,
-) -> Result<Json<TrailerRecord>, Json<&'static str>> {
+) -> Result<Json<TrailerRecord>, (Status, Json<String>)> {
 
     let graph = &state.graph;
 
@@ -1541,7 +1550,7 @@ async fn create_add_on(
     match graph.execute(q).await {
         Ok(mut result) => {
             if let Ok(Some(row)) = result.next().await {
-                let node: Node = row.get("t").map_err(|_| Json("Failed to get node"))?;
+                let node: Node = row.get("t").map_err(|_| (Status::InternalServerError, Json("Failed to read the new add-on".to_string())))?;
 
                 let created = TrailerRecord {
                     uuid:              node.get("uuid").unwrap_or_default(),
@@ -1570,6 +1579,7 @@ async fn create_add_on(
                     statusOX:          node.get("statusOX").unwrap_or_default(),
                     stat:              node.get("stat").unwrap_or_default(),
                     loadComments:      node.get("loadComments").unwrap_or_default(),
+                    dockComments:      node.get("dockComments").unwrap_or_default(),
                     ryderComments:     node.get("ryderComments").unwrap_or_default(),
                     gmComments:        Some(node.get("gmComments").unwrap_or_default()),
                     lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
@@ -1643,12 +1653,12 @@ async fn create_add_on(
 
                 Ok(Json(TrailerRecord { editRef: creator_edit_ref, ..created }))
             } else {
-                Err(Json("Failed to create add on"))
+                Err((Status::InternalServerError, Json("Failed to create add on".to_string())))
             }
         }
         Err(e) => {
             eprintln!("Failed to push add on: {:?}", e);
-            Err(Json("Failed to push add on"))
+            Err((Status::InternalServerError, Json("Failed to push add on".to_string())))
         }
     }
 }
@@ -1811,6 +1821,7 @@ pub async fn upload_on_deck(
                         statusOX,
                         stat,
                         loadComments,
+                        dockComments:      trailer_node.get("dockComments").unwrap_or_default(),
                         ryderComments,
                         gmComments: Some(gmComments),
                         lowestDoh: Some(lowestDoh),
@@ -1952,34 +1963,32 @@ pub async fn upload_on_deck(
 
 #[post("/api/update_live_trailer", format = "json", data = "<trailer_info>")]
 pub async fn update_live_trailer(
-    trailer_info: Json<TrailerRecord>,
+    trailer_info: Json<TrailerUpdate>,
     state: &State<AppState>,
     user: AuthenticatedUser,
     role: Role,
-) -> Result<Json<TrailerRecord>, Json<&'static str>> {
+) -> Result<Json<TrailerRecord>, (Status, Json<String>)> {
     let graph = &state.graph;
-
-    if role.0.contains("vaa")  && trailer_info.dockCode != "V" { return Err(Json("Forbidden")) }
-    if role.0.contains("univ") && trailer_info.dockCode != "U" { return Err(Json("Forbidden")) }
+    let TrailerUpdate { trailer: mut trailer, changedFields: changed_fields } = trailer_info.into_inner();
 
 
     // Resolve editRef → real uuid from the per-user session map
-    let user_edit_ref = trailer_info.editRef.clone();
+    let user_edit_ref = trailer.editRef.clone();
     let uuid = {
         let edit_refs = state.edit_refs.lock().await;
         edit_refs
             .get(&user.0.username)
             .and_then(|m| m.get(&user_edit_ref))
             .cloned()
-    }.ok_or(Json("Invalid edit reference"))?;
+    }.ok_or((Status::Conflict, Json("This sheet is out of date. Reload the page and try again.".to_string())))?;
 
-    let mut trailer = trailer_info.into_inner();
     trailer.uuid = uuid;
 
-    // ── Fetch pre-update state for audit diff ──
+    // ── Current state, for the permission check and the audit diff ──
     // Next Shift checks in trailers that arrive before the roll, so the row may
     // still be staged. Find which label actually holds it and update in place.
-    let mut label = "LiveTrailer";
+    let editable = permissions::editable_fields();
+    let mut label = "";
     let mut old_values: HashMap<&'static str, String> = HashMap::new();
 
     for candidate in ["LiveTrailer", "StagedTrailer"] {
@@ -1990,34 +1999,45 @@ pub async fn update_live_trailer(
             if let Ok(Some(row)) = result.next().await {
                 if let Ok(n) = row.get::<Node>("t") {
                     label = candidate;
-                    let m = &mut old_values;
-                    m.insert("hour",              n.get("hour").unwrap_or_default());
-                    m.insert("dockCode",          n.get("dockCode").unwrap_or_default());
-                    m.insert("scac",              n.get("scac").unwrap_or_default());
-                    m.insert("trailer1",          n.get("trailer1").unwrap_or_default());
-                    m.insert("trailer2",          n.get("trailer2").unwrap_or_default());
-                    m.insert("adjustedStartTime", n.get("adjustedStartTime").unwrap_or_default());
-                    m.insert("scheduleEndDate",   n.get("scheduleEndDate").unwrap_or_default());
-                    m.insert("scheduleEndTime",   n.get("scheduleEndTime").unwrap_or_default());
-                    m.insert("gateArrivalTime",   n.get("gateArrivalTime").unwrap_or_default());
-                    m.insert("actualStartTime",   n.get("actualStartTime").unwrap_or_default());
-                    m.insert("actualEndTime",     n.get("actualEndTime").unwrap_or_default());
-                    m.insert("statusOX",          n.get("statusOX").unwrap_or_default());
-                    m.insert("stat",              n.get("stat").unwrap_or_default());
-                    m.insert("ryderComments",     n.get("ryderComments").unwrap_or_default());
-                    m.insert("gmComments",        n.get("gmComments").unwrap_or_default());
+                    for &field in &editable {
+                        old_values.insert(field, n.get::<String>(field).unwrap_or_default());
+                    }
                     break;
                 }
             }
         }
     }
+    if label.is_empty() {
+        return Err((Status::NotFound, Json("Trailer not found".into())));
+    }
 
-    let update_query = build_update_query(&role.0, &trailer, label);
+    // VAA and Universal work their own dock only — checked against the stored
+    // dock, not the one the request carries.
+    if !permissions::dock_allowed(&role.0, &old_values.get("dockCode").cloned().unwrap_or_default()) {
+        return Err((Status::Forbidden, Json(format!("Your role ({}) can only update its own dock's trailers", role.0))));
+    }
+
+    // ── Only what this edit changes, and only if the role may change it ──
+    let changed: Vec<&'static str> = editable.iter().copied()
+        .filter(|f| changed_fields.is_empty() || changed_fields.iter().any(|c| c == f))
+        .filter(|f| trailer_field(&trailer, f) != old_values.get(f).cloned().unwrap_or_default())
+        .collect();
+    let denied = permissions::denied(&role.0, &changed.iter().copied().collect());
+    if !denied.is_empty() {
+        return Err((Status::Forbidden, Json(format!("Your role ({}) can't change: {}", role.0, denied.join(", ")))));
+    }
+
+    // Nothing to change: read the row back rather than write
+    let update_query = if changed.is_empty() {
+        query(&format!("MATCH (t:{label} {{uuid: $uuid}}) RETURN t")).param("uuid", trailer.uuid.clone())
+    } else {
+        build_update_query(&trailer, label, &changed)
+    };
 
     match graph.execute(update_query).await {
         Ok(mut result) => {
             if let Ok(Some(row)) = result.next().await {
-                let node: Node = row.get("t").map_err(|_| Json("Failed to get updated node"))?;
+                let node: Node = row.get("t").map_err(|_| (Status::InternalServerError, Json("Failed to read the updated trailer".to_string())))?;
                 let updated = TrailerRecord {
                     uuid:              node.get("uuid").unwrap_or_default(),
                     origin:            node.get("origin").unwrap_or_default(),
@@ -2045,6 +2065,7 @@ pub async fn update_live_trailer(
                     statusOX:          node.get("statusOX").unwrap_or_default(),
                     stat:              node.get("stat").unwrap_or_default(),
                     loadComments:      node.get("loadComments").unwrap_or_default(),
+                    dockComments:      node.get("dockComments").unwrap_or_default(),
                     ryderComments:     node.get("ryderComments").unwrap_or_default(),
                     gmComments:        Some(node.get("gmComments").unwrap_or_default()),
                     lowestDoh:         Some(node.get("lowestDoh").unwrap_or_default()),
@@ -2093,6 +2114,10 @@ pub async fn update_live_trailer(
                     ("stat",              old_values.get("stat").cloned().unwrap_or_default(),              updated.stat.clone()),
                     ("ryderComments",     old_values.get("ryderComments").cloned().unwrap_or_default(),     updated.ryderComments.clone()),
                     ("gmComments",        old_values.get("gmComments").cloned().unwrap_or_default(),        updated.gmComments.clone().unwrap_or_default()),
+                    ("dockComments",      old_values.get("dockComments").cloned().unwrap_or_default(),      updated.dockComments.clone()),
+                    ("loadComments",      old_values.get("loadComments").cloned().unwrap_or_default(),      updated.loadComments.clone()),
+                    ("door",              old_values.get("door").cloned().unwrap_or_default(),              updated.door.clone()),
+                    ("doorArrivalTime",   old_values.get("doorArrivalTime").cloned().unwrap_or_default(),   updated.doorArrivalTime.clone()),
                 ];
 
                 for (field, old_val, new_val) in &audit_pairs {
@@ -2126,12 +2151,12 @@ pub async fn update_live_trailer(
                 // ── Echo the caller's editRef back so their local state stays valid ──
                 Ok(Json(TrailerRecord { editRef: user_edit_ref, ..updated }))
             } else {
-                Err(Json("Trailer not found"))
+                Err((Status::NotFound, Json("Trailer not found".into())))
             }
         }
         Err(e) => {
             eprintln!("Failed to update trailer: {:?}", e);
-            Err(Json("Failed to update trailer"))
+            Err((Status::InternalServerError, Json("Failed to update trailer".into())))
         }
     }
 }
