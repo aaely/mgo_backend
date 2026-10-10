@@ -42,12 +42,18 @@ const GROUP_ROLE_ENV_VARS: [(&str, &str); 9] = [
     ("AZURE_GROUP_FLOATER",   "floater"),
 ];
 
-fn role_from_groups(groups: &[String]) -> Option<String> {
+/// The `roles` claim holds group Object IDs when the app registration emits
+/// groups as role claims, or the role's value (e.g. "admin") when the groups are
+/// assigned to App roles — either one counts.
+fn role_from_claims(roles: &[String]) -> Option<String> {
     for (env_key, role) in GROUP_ROLE_ENV_VARS {
-        if let Ok(group_id) = std::env::var(env_key) {
-            if !group_id.is_empty() && groups.iter().any(|g| g.eq_ignore_ascii_case(&group_id)) {
-                return Some(role.to_string());
-            }
+        let group_id = std::env::var(env_key).unwrap_or_default();
+        let matches = |r: &String| {
+            r.eq_ignore_ascii_case(role)
+                || (!group_id.is_empty() && r.eq_ignore_ascii_case(&group_id))
+        };
+        if roles.iter().any(matches) {
+            return Some(role.to_string());
         }
     }
     // Temporary, mirroring the same shortcut in ldap_auth.rs so the Azure
@@ -161,12 +167,13 @@ struct IdTokenClaims {
     preferred_username: Option<String>,
     #[serde(default)]
     email: Option<String>,
-    // Azure drops this claim entirely once a user is in more than ~200 groups
-    // ("group overage") and substitutes a _claim_names pointer at the Graph API
-    // instead — not handled here. If someone reports "not a member of any
-    // authorized group" despite real membership, check that first.
+    // Group IDs or App role values; see role_from_claims. When groups are
+    // emitted as role claims, Azure drops the claim entirely once a user is in
+    // more than ~200 groups ("group overage") — not handled here. If someone
+    // reports "not a member of any authorized group" despite real membership,
+    // check that first; limiting the claim to groups assigned to the app avoids it.
     #[serde(default)]
-    groups: Vec<String>,
+    roles: Vec<String>,
 }
 
 /// Step 3 — prove the ID token came from our tenant, for our app. The
@@ -229,7 +236,7 @@ pub async fn complete_login(
         .or(claims.email)
         .unwrap_or(claims.oid);
 
-    let role = role_from_groups(&claims.groups).ok_or(AzureAuthError::NoRoleAssigned)?;
+    let role = role_from_claims(&claims.roles).ok_or(AzureAuthError::NoRoleAssigned)?;
 
     Ok(AzureUser { username, role })
 }
