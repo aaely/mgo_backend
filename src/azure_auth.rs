@@ -59,8 +59,7 @@ fn role_from_claims(roles: &[String]) -> Option<String> {
     // Temporary, mirroring the same shortcut in ldap_auth.rs so the Azure
     // round-trip can be exercised before the Entra groups exist. Revert to
     // None alongside that one at onboarding.
-    Some("admin".to_string())
-    //None
+    None
 }
 
 fn tenant_id() -> Result<String, AzureAuthError> {
@@ -213,6 +212,19 @@ async fn validate_id_token(id_token: &str) -> Result<IdTokenClaims, AzureAuthErr
     let data = decode::<IdTokenClaims>(id_token, &decoding_key, &validation)
         .map_err(|e| AzureAuthError::InvalidToken(e.to_string()))?;
 
+    let debug_data = decode::<serde_json::Value>(id_token, &decoding_key, &validation)
+        .map_err(|e| AzureAuthError::InvalidToken(e.to_string()))?;
+
+    eprintln!(
+        "validated ID token payload:\n{}",
+        serde_json::to_string_pretty(&debug_data.claims)
+            .unwrap_or_else(|_| "<unable to serialize claims>".into())
+    );
+
+    eprintln!(
+        "claims: {:?}",
+        data.claims
+    );
     Ok(data.claims)
 }
 
