@@ -160,6 +160,7 @@ async fn main() {
             get_lms,
             get_lms_by_route,
             get_lms_by_load,
+            get_lms_route_suggestions,
             get_users_admin,
             get_contacts,
             get_part_alerts,

@@ -16,9 +16,9 @@ impl std::fmt::Display for AzureAuthError {
         match self {
             AzureAuthError::Config(e)       => write!(f, "Azure AD misconfigured: {e}"),
             AzureAuthError::Http(e)         => write!(f, "Azure AD request failed: {e}"),
-            AzureAuthError::InvalidState    => write!(f, "Invalid or expired sign-in attempt"),
+            AzureAuthError::InvalidState             => write!(f, "Invalid or expired sign-in attempt"),
             AzureAuthError::InvalidToken(e) => write!(f, "Invalid identity token: {e}"),
-            AzureAuthError::NoRoleAssigned  => write!(f, "User is not a member of any authorized group"),
+            AzureAuthError::NoRoleAssigned           => write!(f, "User is not a member of any authorized group"),
         }
     }
 }

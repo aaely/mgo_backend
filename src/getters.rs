@@ -166,6 +166,60 @@ pub async fn get_lms_by_load(
     }
 }
 
+/// Load suggestions for a partly typed route ID — the route counterpart of
+/// get_lms_by_load, for the log forms' Route field. Matches from the start of the
+/// route, soonest arrival first, a page of 15. get_lms_by_route is the Route page's
+/// unlimited "anywhere in the ID" search and stays as it is.
+#[get("/api/get_lms_route_suggestions?<route>")]
+pub async fn get_lms_route_suggestions(
+    route: &str,
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+    role: Role,
+) -> Result<Json<Vec<LMSRecord>>, (rocket::http::Status, Json<String>)> {
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err((rocket::http::Status::Forbidden, Json("Forbidden".into())));
+    }
+    if route.trim().is_empty() {
+        return Ok(Json(Vec::new()));
+    }
+
+    let q = query("
+        MATCH (l:LMSRecord)
+        WHERE toLower(l.route_id) STARTS WITH toLower($route)
+        RETURN l
+        ORDER BY l.schedule_arrival_time, l.load_no
+        LIMIT 15
+    ").param("route", route.trim());
+
+    let mut result = state.graph.execute(q).await.map_err(|e| {
+        println!("Failed to run get_lms_route_suggestions: {:?}", e);
+        (rocket::http::Status::InternalServerError, Json("Failed to search LMS by route".to_string()))
+    })?;
+
+    let mut data: Vec<LMSRecord> = Vec::new();
+    while let Ok(Some(record)) = result.next().await {
+        let Ok(lms_node) = record.get::<Node>("l") else { continue };
+        data.push(LMSRecord {
+            load_no:               lms_node.get("load_no").unwrap_or_default(),
+            location:              lms_node.get("location").unwrap_or_default(),
+            dock:                  lms_node.get("dock").unwrap_or_default(),
+            route_id:              lms_node.get("route_id").unwrap_or_default(),
+            route_ver:             lms_node.get("route_ver").unwrap_or_default(),
+            scac:                  lms_node.get("scac").unwrap_or_default(),
+            status:                lms_node.get("status").unwrap_or_default(),
+            trailer:               lms_node.get("trailer").unwrap_or_default(),
+            trailer2:              lms_node.get("trailer2").unwrap_or_default(),
+            schedule_start_time:   lms_node.get("schedule_start_time").unwrap_or_default(),
+            schedule_arrival_time: lms_node.get("schedule_arrival_time").unwrap_or_default(),
+            actual_start_time:     lms_node.get("actual_start_time").unwrap_or_default(),
+            actual_end_time:       lms_node.get("actual_end_time").unwrap_or_default(),
+            dock_sequence:         lms_node.get("dock_sequence").unwrap_or_default(),
+        });
+    }
+    Ok(Json(data))
+}
+
 #[get("/api/get_dy")]
 pub async fn get_dy(
     state: &State<AppState>,
