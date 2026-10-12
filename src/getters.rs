@@ -2305,7 +2305,7 @@ pub async fn get_rail_asl(state: &State<AppState>, _user: AuthenticatedUser) -> 
     Json(parts)
 }
 
-/// IO page's low-DOH tab: parts on the P* and U* decks at or under `max_doh` days
+/// IO page's low-DOH tab: parts on the P*, U* and IO decks at or under `max_doh` days
 /// on hand (10 unless asked otherwise), most urgent first.
 #[get("/api/get_io_low_doh?<max_doh>")]
 pub async fn get_io_low_doh(
@@ -2317,7 +2317,7 @@ pub async fn get_io_low_doh(
 
     let q = neo4rs::query(
         "MATCH (l:PartASL)
-         WHERE (toUpper(l.deck) STARTS WITH 'P' OR toUpper(l.deck) STARTS WITH 'U')
+         WHERE (toUpper(l.deck) STARTS WITH 'P' OR toUpper(l.deck) STARTS WITH 'U' OR toUpper(l.deck) = 'IO')
            AND l.doh <= $max_doh
          RETURN l
          ORDER BY l.doh, l.deck, l.part"

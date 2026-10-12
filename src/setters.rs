@@ -2579,9 +2579,9 @@ pub async fn upload_part_asn(
 }
 
 /// Builds IO containers (Trailer -> SID -> Part, Schedule) from the ASN, the same
-/// shape upload_in_transit builds from the GMAP report. Only stat 4 lines for U*
-/// and P* decks are taken. The ASN trailer carries 4 characters ahead of the
-/// container number, dropped here so the id matches the in-transit report's.
+/// shape upload_in_transit builds from the GMAP report. Only stat 4 lines for the
+/// U*, P* and IO decks are taken. The ASN trailer carries 4 characters ahead of
+/// the container number, dropped here so the id matches the in-transit report's.
 ///
 /// Additive: an existing schedule keeps what operators entered. Supplier is the
 /// supplier of the trailer's lowest-DOH part (PartRoute -> PartASL, as
@@ -2592,7 +2592,10 @@ async fn build_io_from_asn(graph: &neo4rs::Graph, data: &[PartASN]) -> Result<()
     let lines: Vec<(String, &PartASN)> = data
         .iter()
         .filter(|a| a.status == Some(4))
-        .filter(|a| a.deck.to_uppercase().starts_with(['U', 'P']))
+        .filter(|a| {
+            let deck = a.deck.trim().to_uppercase();
+            deck.starts_with(['U', 'P']) || deck == "IO"
+        })
         .map(|a| (a.trailer.chars().skip(4).collect::<String>().trim().to_string(), a))
         .filter(|(t, _)| !t.is_empty() && !delivered.contains(t))
         .collect();
