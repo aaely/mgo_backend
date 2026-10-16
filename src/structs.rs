@@ -51,6 +51,8 @@ pub struct Schedule {
     #[serde(default)] pub CarrierEmail: String,
     /// Earliest ship date across the trailer's SIDs (YYYY-MM-DD), set by the in-transit upload
     #[serde(default)] pub ShipDate: String,
+    /// Flagged on the IO page as having an issue; never set on older schedules
+    #[serde(default)] pub IsIssue: bool,
 }
 
 /// A partial update to an IO trailer's Schedule (update_io_schedule): only the
@@ -71,6 +73,7 @@ pub struct IoSchedulePatch {
     #[serde(default)] pub Location:     Option<String>,
     #[serde(default)] pub CarrierEmail: Option<String>,
     #[serde(default)] pub ShipDate:     Option<String>,
+    #[serde(default)] pub IsIssue:      Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Default, Debug)]

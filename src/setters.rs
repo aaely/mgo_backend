@@ -238,6 +238,7 @@ pub async fn update_io(
                     Supplier:     schedule_node.get("Supplier").unwrap_or_default(),
                     CarrierEmail: schedule_node.get("CarrierEmail").unwrap_or_default(),
                     ShipDate:     schedule_node.get("ShipDate").unwrap_or_default(),
+                    IsIssue:      schedule_node.get("IsIssue").unwrap_or_default(),
                 };
 
                 let parts: Vec<String> = row.get("parts").unwrap_or_else(|_| Vec::new());
@@ -436,11 +437,16 @@ pub async fn update_io_schedule(
     let sent: Vec<(&'static str, String)> = fields.iter()
         .filter_map(|(name, v)| v.as_ref().map(|v| (*name, v.clone())))
         .collect();
-    if sent.is_empty() {
+    if sent.is_empty() && patch.IsIssue.is_none() {
         return Err((Status::BadRequest, Json("Nothing to update".into())));
     }
 
-    let set_clause = sent.iter().map(|(name, _)| format!("s.{name} = ${name}")).collect::<Vec<_>>().join(", ");
+    let mut sets: Vec<String> = sent.iter().map(|(name, _)| format!("s.{name} = ${name}")).collect();
+    // The issue flag is the one boolean, so it's set apart from the string fields
+    if patch.IsIssue.is_some() {
+        sets.push("s.IsIssue = $IsIssue".into());
+    }
+    let set_clause = sets.join(", ");
     let mut q = query(&format!("
         MATCH (t:Trailer {{id: $trailer}})-[:HAS_SCHEDULE]->(s:Schedule)
         SET {set_clause}
@@ -448,6 +454,9 @@ pub async fn update_io_schedule(
     ")).param("trailer", patch.Trailer.clone());
     for (name, value) in sent {
         q = q.param(name, value);
+    }
+    if let Some(is_issue) = patch.IsIssue {
+        q = q.param("IsIssue", is_issue);
     }
 
     let mut result = state.graph.execute(q).await.map_err(|e| {
@@ -475,6 +484,7 @@ pub async fn update_io_schedule(
         Location:     s.get("Location").unwrap_or_default(),
         CarrierEmail: s.get("CarrierEmail").unwrap_or_default(),
         ShipDate:     s.get("ShipDate").unwrap_or_default(),
+        IsIssue:      s.get("IsIssue").unwrap_or_default(),
     }))
 }
 
@@ -905,6 +915,7 @@ pub async fn delivered(
                     Location:     schedule_node.get("Location").unwrap_or_default(),
                     CarrierEmail: schedule_node.get("CarrierEmail").unwrap_or_default(),
                     ShipDate:     schedule_node.get("ShipDate").unwrap_or_default(),
+                    IsIssue:      schedule_node.get("IsIssue").unwrap_or_default(),
                 };
 
                 let parts: Vec<String> = row.get("parts").unwrap_or_else(|_| Vec::new());
@@ -1038,6 +1049,7 @@ pub async fn no_show(
                     Location:     schedule_node.get("Location").unwrap_or_default(),
                     CarrierEmail: schedule_node.get("CarrierEmail").unwrap_or_default(),
                     ShipDate:     schedule_node.get("ShipDate").unwrap_or_default(),
+                    IsIssue:      schedule_node.get("IsIssue").unwrap_or_default(),
                 };
 
                 let parts: Vec<String> = row.get("parts").unwrap_or_else(|_| Vec::new());
