@@ -2315,23 +2315,29 @@ pub async fn get_conflicting_deliveries(
 ) -> Json<Vec<LMSRecord>> {
     let graph = &state.graph;
 
+    // Loads on the same route arriving less than an hour apart, identical times
+    // included. Arrival times that don't start "YYYY-MM-DD HH:MM:SS" are skipped
+    // rather than failing the whole query.
     let q = neo4rs::query(
         r#"
         MATCH (n:LMSRecord)
         WHERE n.route_id IS NOT NULL
-        AND n.schedule_arrival_time IS NOT NULL
+        AND n.schedule_arrival_time =~ '\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}.*'
 
-        WITH
-        n.route_id AS route_id,
-        n.schedule_arrival_time AS delivery_time,
-        collect(n) AS matching_nodes
+        WITH n, localdatetime(
+            substring(n.schedule_arrival_time, 0, 10) + 'T' + substring(n.schedule_arrival_time, 11, 8)
+        ) AS arrival
 
-        WHERE size(matching_nodes) > 1
+        WITH n.route_id AS route_id, collect({node: n, arrival: arrival}) AS loads
+        WHERE size(loads) > 1
 
-        UNWIND matching_nodes AS node
+        UNWIND loads AS a
+        WITH a, [b IN loads WHERE b.node <> a.node
+                 AND abs(duration.inSeconds(a.arrival, b.arrival).seconds) < 3600] AS close
+        WHERE size(close) > 0
 
-        RETURN node AS l, route_id, delivery_time
-        ORDER BY route_id, delivery_time, l.load_no
+        RETURN a.node AS l
+        ORDER BY l.route_id, l.schedule_arrival_time, l.load_no
         "#
     );
         
