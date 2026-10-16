@@ -2,6 +2,7 @@ use crate::structs::*;
 use crate::auth::{AuthenticatedUser, AdminOrManager};
 use crate::role::Role;
 use crate::helpers::*;
+use rocket::http::Status;
 use rocket::{get, post, serde::json::Json, State};
 use neo4rs::{query, Node};
 use std::collections::HashMap;
@@ -2305,6 +2306,65 @@ pub async fn get_rail_asl(state: &State<AppState>, _user: AuthenticatedUser) -> 
     }
 
     Json(parts)
+}
+
+#[get("/api/get_conflicting_deliveries")]
+pub async fn get_conflicting_deliveries(
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+) -> Json<Vec<LMSRecord>> {
+    let graph = &state.graph;
+
+    let q = neo4rs::query(
+        r#"
+        MATCH (n:LMSRecord)
+        WHERE n.route_id IS NOT NULL
+        AND n.schedule_arrival_time IS NOT NULL
+
+        WITH
+        n.route_id AS route_id,
+        n.schedule_arrival_time AS delivery_time,
+        collect(n) AS matching_nodes
+
+        WHERE size(matching_nodes) > 1
+
+        UNWIND matching_nodes AS node
+
+        RETURN node AS l, route_id, delivery_time
+        ORDER BY route_id, delivery_time, l.load_no
+        "#
+    );
+        
+    let mut result = match graph.execute(q).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("get_conflicting_deliveries error: {e}");
+            return Json(vec![]);
+        }
+    };
+
+    let mut loads: Vec<LMSRecord> = vec![];
+    while let Ok(Some(row)) = result.next().await {
+        if let Ok(node) = row.get::<neo4rs::Node>("l") {
+            loads.push(LMSRecord {
+                load_no:               node.get("load_no").unwrap_or_default(),
+                dock:                  node.get("dock").unwrap_or_default(),
+                location:              node.get("location").unwrap_or_default(),
+                route_id:              node.get("route_id").unwrap_or_default(),
+                route_ver:             node.get("route_ver").unwrap_or_default(),
+                scac:                  node.get("scac").unwrap_or_default(),
+                trailer:               node.get("trailer").unwrap_or_default(),
+                trailer2:              node.get("trailer2").unwrap_or_default(),
+                status:                node.get("status").unwrap_or_default(),
+                schedule_arrival_time: node.get("schedule_arrival_time").unwrap_or_default(),
+                schedule_start_time:   node.get("schedule_start_time").unwrap_or_default(),
+                dock_sequence:         node.get("dock_sequence").unwrap_or_default(),
+                actual_start_time:     node.get("actual_start_time").unwrap_or_default(),
+                actual_end_time:       node.get("actual_end_time").unwrap_or_default(),
+            });
+        }
+    }
+    Json(loads)
 }
 
 /// IO page's low-DOH tab: parts on the P*, U* and IO decks at or under `max_doh` days

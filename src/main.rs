@@ -204,6 +204,7 @@ async fn main() {
             get_week,
             assign_shift,
             unassign_shift,
+            get_conflicting_deliveries,
             get_scan_routes,
             get_part_routes,
             get_first_supplier,
