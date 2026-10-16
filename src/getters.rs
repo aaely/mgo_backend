@@ -2323,7 +2323,7 @@ pub async fn get_conflicting_deliveries(
         MATCH (n:LMSRecord)
         WHERE n.route_id IS NOT NULL
         AND n.schedule_arrival_time =~ '\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}.*'
-
+        AND NOT n.dock_sequence CONTAINS('-')
         WITH n, localdatetime(
             substring(n.schedule_arrival_time, 0, 10) + 'T' + substring(n.schedule_arrival_time, 11, 8)
         ) AS arrival
