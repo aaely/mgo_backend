@@ -6,6 +6,9 @@
 //! A route's deliveries are its scheduled LMS loads, plus loads moved by an
 //! Exception Log or DY Log entry. A load with an entry in either log is counted
 //! at the entry's time, not its LMS one, so it isn't counted twice.
+//!
+//! E dock is scheduled entirely by hand through the two logs, so for an E
+//! delivery its LMS times aren't real and only the log entries count.
 
 use crate::auth::AuthenticatedUser;
 use crate::role::Role;
@@ -53,14 +56,16 @@ fn within(at: NaiveDateTime, window: i64, rows: Vec<(String, String, String, Str
 }
 
 /// Other deliveries on `route` within `hours` (default 2) of `date` `time`.
-/// `load` and `repower` are the loads being scheduled, left out of the check.
-#[get("/api/route_deliveries_near?<route>&<date>&<time>&<load>&<repower>&<hours>")]
+/// `load` and `repower` are the loads being scheduled, left out of the check;
+/// `dock` is where it's delivering (E skips the LMS loads).
+#[get("/api/route_deliveries_near?<route>&<date>&<time>&<load>&<repower>&<dock>&<hours>")]
 pub async fn route_deliveries_near(
     route:   &str,
     date:    &str,
     time:    &str,
     load:    Option<&str>,
     repower: Option<&str>,
+    dock:    Option<&str>,
     hours:   Option<i64>,
     state:   &State<AppState>,
     _user:   AuthenticatedUser,
@@ -86,10 +91,12 @@ pub async fn route_deliveries_near(
         .map(|l| l.trim().to_string())
         .filter(|l| !l.is_empty())
         .collect();
+    let with_lms = !dock.is_some_and(|d| d.trim().eq_ignore_ascii_case("E"));
 
     let q = query(r#"
         MATCH (l:LMSRecord)
-        WHERE toUpper(trim(l.route_id)) = $route
+        WHERE $with_lms
+          AND toUpper(trim(l.route_id)) = $route
           AND substring(l.schedule_arrival_time, 0, 10) IN $days
           AND NOT l.load_no IN $exclude
         OPTIONAL MATCH (x:ExceptionLogEntry {loadNum: l.load_no})
@@ -109,7 +116,8 @@ pub async fn route_deliveries_near(
     "#)
     .param("route", route.clone())
     .param("days", days)
-    .param("exclude", exclude);
+    .param("exclude", exclude)
+    .param("with_lms", with_lms);
 
     let mut result = state.graph.execute(q).await.map_err(|e| {
         eprintln!("route_deliveries_near error for {route}: {e:?}");
