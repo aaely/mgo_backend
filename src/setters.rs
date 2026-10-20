@@ -1182,10 +1182,15 @@ pub async fn roll_next_shift(
             gateArrivalTime:    t.gateArrivalTime,
             actualStartTime:    t.actualStartTime,
             actualEndTime:      t.actualEndTime,
+            // 'U' (Not Marked): stat X says it was received, but no one entered
+            // an end time — the floor didn't finish marking it, so it's neither a
+            // no-show nor a carryover. Rescheduled trailers keep their 'R'.
             statusOX:           CASE
+                                    WHEN t.statusOX <> 'R' AND t.actualEndTime = '' AND coalesce(t.stat, '') = 'X' THEN 'U'
                                     WHEN t.gateArrivalTime = '' AND t.actualEndTime = '' THEN 'N'
                                     ELSE t.statusOX
                                 END,
+            stat:               t.stat,
             lowestDoh:          t.lowestDoh,
             loadComments:       t.loadComments,
             ryderComments:      t.ryderComments,
@@ -1250,14 +1255,16 @@ pub async fn roll_next_shift(
         Json("Failed to push rescheduled trailers")
     })?;
 
-    // ── Query 3: Delete rescheduled, completed, and no-show LiveTrailers ──
-    // No-shows don't roll forward; Query 1 already archived them as statusOX 'N'.
-    // What survives is exactly the arrived-but-unfinished carryover set.
+    // ── Query 3: Delete rescheduled, completed, no-show and not-marked LiveTrailers ──
+    // No-shows and not-marked don't roll forward; Query 1 already archived them as
+    // statusOX 'N' and 'U'. What survives is exactly the arrived-but-unfinished
+    // carryover set.
     let delete_query = query("
         MATCH (t:LiveTrailer)
         WHERE t.statusOX = 'R'
            OR (t.gateArrivalTime <> '' AND t.actualEndTime <> '')
            OR (t.gateArrivalTime = '' AND t.actualEndTime = '')
+           OR (t.actualEndTime = '' AND coalesce(t.stat, '') = 'X')
         DELETE t
     ");
 
