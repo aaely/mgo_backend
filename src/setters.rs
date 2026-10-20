@@ -1,5 +1,5 @@
 use crate::structs::*;
-use crate::helpers::{build_update_query, get_requested_fields, recently_delivered, trailer_field};
+use crate::helpers::{build_update_query, edit_ref_for, get_requested_fields, recently_delivered, trailer_field};
 use crate::permissions;
 use crate::auth::{AuthenticatedUser, AdminOrManager, AdminOnly, AdminOrSupervisor};
 use crate::role::Role;
@@ -1626,14 +1626,13 @@ async fn create_add_on(
                 }
 
                 // ── Issue an editRef for the creator so they can update immediately ──
-                let creator_edit_ref = uuid::Uuid::new_v4().to_string();
-                {
+                let creator_edit_ref = {
                     let mut edit_refs = state.edit_refs.lock().await;
-                    edit_refs
+                    let user_map = edit_refs
                         .entry(username.to_string())
-                        .or_insert_with(HashMap::new)
-                        .insert(creator_edit_ref.clone(), created.uuid.clone());
-                }
+                        .or_insert_with(HashMap::new);
+                    edit_ref_for(user_map, &created.uuid)
+                };
 
                 // ── Audit trail: single entry for the add-on ──
                 let audit_timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();

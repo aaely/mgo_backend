@@ -313,3 +313,22 @@ pub async fn ensure_indexes(graph: &neo4rs::Graph) {
         }
     }
 }
+
+// A user's editRefs: editRef -> trailer uuid. One ref per trailer per user, so
+// every browser and tab the user has open gets the same ref and a reload in one
+// can't invalidate another. Past this size the map is rebuilt from scratch —
+// the refs then belong to trailers long rolled off the sheets.
+const MAX_EDIT_REFS_PER_USER: usize = 5000;
+
+/** The user's ref for `uuid`, reusing the one already issued if there is one. */
+pub fn edit_ref_for(user_map: &mut HashMap<String, String>, uuid: &str) -> String {
+    if let Some((edit_ref, _)) = user_map.iter().find(|(_, u)| u.as_str() == uuid) {
+        return edit_ref.clone();
+    }
+    if user_map.len() >= MAX_EDIT_REFS_PER_USER {
+        user_map.clear();
+    }
+    let edit_ref = uuid::Uuid::new_v4().to_string();
+    user_map.insert(edit_ref.clone(), uuid.to_string());
+    edit_ref
+}

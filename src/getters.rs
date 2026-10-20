@@ -835,17 +835,16 @@ pub async fn get_live_trailers(
                 });
             }
 
-            // Generate a fresh, per-user editRef for each trailer and store the mapping.
+            // The user's editRef for each trailer. Existing refs are reused, never
+            // cleared: the same user may have the sheet open in another browser,
+            // and clearing here made that one's saves fail as "out of date".
             {
                 let mut edit_refs = state.edit_refs.lock().await;
                 let user_map = edit_refs
                     .entry(user.0.username.clone())
                     .or_insert_with(HashMap::new);
-                user_map.clear();
                 for record in &mut records {
-                    let edit_ref = uuid::Uuid::new_v4().to_string();
-                    user_map.insert(edit_ref.clone(), record.uuid.clone());
-                    record.editRef = edit_ref;
+                    record.editRef = edit_ref_for(user_map, &record.uuid);
                 }
             }
 
@@ -933,9 +932,7 @@ pub async fn get_staged_trailers(
                     .entry(user.0.username.clone())
                     .or_insert_with(HashMap::new);
                 for record in &mut records {
-                    let edit_ref = uuid::Uuid::new_v4().to_string();
-                    user_map.insert(edit_ref.clone(), record.uuid.clone());
-                    record.editRef = edit_ref;
+                    record.editRef = edit_ref_for(user_map, &record.uuid);
                 }
             }
 
