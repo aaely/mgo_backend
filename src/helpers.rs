@@ -222,6 +222,8 @@ pub fn trailer_field(t: &TrailerRecord, field: &str) -> String {
         "actualEndDate"     => t.actualEndDate.clone(),
         "statusOX"          => t.statusOX.clone(),
         "stat"              => t.stat.clone(),
+        "receivedDate"      => t.receivedDate.clone(),
+        "receivedTime"      => t.receivedTime.clone(),
         "ryderComments"     => t.ryderComments.clone(),
         "gmComments"        => t.gmComments.clone().unwrap_or_default(),
         "dockComments"      => t.dockComments.clone(),

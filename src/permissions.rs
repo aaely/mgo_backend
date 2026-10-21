@@ -20,7 +20,8 @@ pub const ACTIONS: &[(&str, &str, &[&str])] = &[
     ("unload",        "Unload / Empty",                    &["actualStartTime", "actualStartDate", "actualEndTime", "actualEndDate"]),
     ("trailer",       "Set Trailer",                       &["trailer1", "trailer2"]),
     ("status",        "Status OX / Confirm Late / Not Late", &["statusOX"]),
-    ("stat",          "Stat toggle",                       &["stat"]),
+    // Marking a trailer received (X) stamps when; un-marking clears it
+    ("stat",          "Stat toggle",                       &["stat", "receivedDate", "receivedTime"]),
     ("ryderComments", "Ryder Comments",                    &["ryderComments"]),
     ("gmComments",    "GM Comments",                       &["gmComments"]),
     ("dockComments",  "Dock Comments",                     &["dockComments"]),

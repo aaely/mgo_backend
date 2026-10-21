@@ -79,6 +79,8 @@ pub async fn late_trailer_service(graph: Arc<Graph>, ws_list: WebSocketList) {
                             doorArrivalDate:   node.get("doorArrivalDate").unwrap_or_default(),
                             actualStartDate:   node.get("actualStartDate").unwrap_or_default(),
                             actualEndDate:     node.get("actualEndDate").unwrap_or_default(),
+                            receivedDate:    node.get("receivedDate").unwrap_or_default(),
+                            receivedTime:    node.get("receivedTime").unwrap_or_default(),
                         };
 
                         if let Ok(data) = serde_json::to_string(&updated) {

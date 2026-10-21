@@ -1203,7 +1203,9 @@ pub async fn roll_next_shift(
             gateArrivalDate:    t.gateArrivalDate,
             doorArrivalDate:    t.doorArrivalDate,
             actualStartDate:    t.actualStartDate,
-            actualEndDate:      t.actualEndDate
+            actualEndDate:      t.actualEndDate,
+            receivedDate:       coalesce(t.receivedDate, ''),
+            receivedTime:       coalesce(t.receivedTime, '')
         })
         CREATE (o)-[:HAS_TRAILER]->(r)
     ")
@@ -1612,6 +1614,8 @@ async fn create_add_on(
                     doorArrivalDate:   node.get("doorArrivalDate").unwrap_or_default(),
                     actualStartDate:   node.get("actualStartDate").unwrap_or_default(),
                     actualEndDate:     node.get("actualEndDate").unwrap_or_default(),
+                    receivedDate:    node.get("receivedDate").unwrap_or_default(),
+                    receivedTime:    node.get("receivedTime").unwrap_or_default(),
                 };
 
                 // ── Broadcast without editRef (editRefs are per-user, not shared) ──
@@ -1853,6 +1857,8 @@ pub async fn upload_on_deck(
                         doorArrivalDate: trailer_node.get("doorArrivalDate").unwrap_or_default(),
                         actualStartDate: trailer_node.get("actualStartDate").unwrap_or_default(),
                         actualEndDate:   trailer_node.get("actualEndDate").unwrap_or_default(),
+                        receivedDate:  trailer_node.get("receivedDate").unwrap_or_default(),
+                        receivedTime:  trailer_node.get("receivedTime").unwrap_or_default(),
                     };
                     // ── Audit trail: log initial field values on creation ──
                     let audit_timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -2097,6 +2103,8 @@ pub async fn update_live_trailer(
                     doorArrivalDate:   node.get("doorArrivalDate").unwrap_or_default(),
                     actualStartDate:   node.get("actualStartDate").unwrap_or_default(),
                     actualEndDate:     node.get("actualEndDate").unwrap_or_default(),
+                    receivedDate:    node.get("receivedDate").unwrap_or_default(),
+                    receivedTime:    node.get("receivedTime").unwrap_or_default(),
                 };
                 // ── Broadcast without editRef (per-user, not shareable) ──
                 if let Ok(data) = serde_json::to_value(&updated) {
@@ -2133,6 +2141,8 @@ pub async fn update_live_trailer(
                     ("actualEndTime",     old_values.get("actualEndTime").cloned().unwrap_or_default(),     updated.actualEndTime.clone()),
                     ("statusOX",          old_values.get("statusOX").cloned().unwrap_or_default(),          updated.statusOX.clone()),
                     ("stat",              old_values.get("stat").cloned().unwrap_or_default(),              updated.stat.clone()),
+                    ("receivedDate",      old_values.get("receivedDate").cloned().unwrap_or_default(),      updated.receivedDate.clone()),
+                    ("receivedTime",      old_values.get("receivedTime").cloned().unwrap_or_default(),      updated.receivedTime.clone()),
                     ("ryderComments",     old_values.get("ryderComments").cloned().unwrap_or_default(),     updated.ryderComments.clone()),
                     ("gmComments",        old_values.get("gmComments").cloned().unwrap_or_default(),        updated.gmComments.clone().unwrap_or_default()),
                     ("dockComments",      old_values.get("dockComments").cloned().unwrap_or_default(),      updated.dockComments.clone()),

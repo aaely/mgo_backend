@@ -760,6 +760,8 @@ pub async fn get_past_shift(
                     doorArrivalDate:   node.get("doorArrivalDate").unwrap_or_default(),
                     actualStartDate:   node.get("actualStartDate").unwrap_or_default(),
                     actualEndDate:     node.get("actualEndDate").unwrap_or_default(),
+                    receivedDate:    node.get("receivedDate").unwrap_or_default(),
+                    receivedTime:    node.get("receivedTime").unwrap_or_default(),
                 });
             }
             if role.0.contains("univ") {
@@ -836,6 +838,8 @@ pub async fn get_live_trailers(
                     doorArrivalDate:   node.get("doorArrivalDate").unwrap_or_default(),
                     actualStartDate:   node.get("actualStartDate").unwrap_or_default(),
                     actualEndDate:     node.get("actualEndDate").unwrap_or_default(),
+                    receivedDate:    node.get("receivedDate").unwrap_or_default(),
+                    receivedTime:    node.get("receivedTime").unwrap_or_default(),
                 });
             }
 
@@ -918,6 +922,8 @@ pub async fn get_staged_trailers(
                     doorArrivalDate:   node.get("doorArrivalDate").unwrap_or_default(),
                     actualStartDate:   node.get("actualStartDate").unwrap_or_default(),
                     actualEndDate:     node.get("actualEndDate").unwrap_or_default(),
+                    receivedDate:    node.get("receivedDate").unwrap_or_default(),
+                    receivedTime:    node.get("receivedTime").unwrap_or_default(),
                 });
             }
             if role.0.contains("univ") {

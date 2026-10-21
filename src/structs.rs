@@ -176,6 +176,9 @@ pub struct TrailerRecord {
     #[serde(default)] pub doorArrivalDate: String,
     #[serde(default)] pub actualStartDate: String,
     #[serde(default)] pub actualEndDate: String,
+    // When the trailer was marked received (stat X); blank otherwise
+    #[serde(default)] pub receivedDate: String,
+    #[serde(default)] pub receivedTime: String,
     #[serde(default)] pub statusOX: String,
     #[serde(default)] pub stat: String,
     #[serde(default)] pub loadComments: String,
