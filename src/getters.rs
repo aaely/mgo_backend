@@ -46,6 +46,7 @@ pub async fn get_lms(
                     actual_start_time:     lms_node.get("actual_start_time").unwrap_or_default(),
                     actual_end_time:       lms_node.get("actual_end_time").unwrap_or_default(),
                     dock_sequence:         lms_node.get("dock_sequence").unwrap_or_default(),
+                    aca:                   lms_node.get("aca").unwrap_or_default(),
                 };
                 data.push(rec);
             }
@@ -99,6 +100,7 @@ pub async fn get_lms_by_route(
                     actual_start_time:     lms_node.get("actual_start_time").unwrap_or_default(),
                     actual_end_time:       lms_node.get("actual_end_time").unwrap_or_default(),
                     dock_sequence:         lms_node.get("dock_sequence").unwrap_or_default(),
+                    aca:                   lms_node.get("aca").unwrap_or_default(),
                 });
             }
             Ok(Json(data))
@@ -156,6 +158,7 @@ pub async fn get_lms_by_load(
                     actual_start_time:     lms_node.get("actual_start_time").unwrap_or_default(),
                     actual_end_time:       lms_node.get("actual_end_time").unwrap_or_default(),
                     dock_sequence:         lms_node.get("dock_sequence").unwrap_or_default(),
+                    aca:                   lms_node.get("aca").unwrap_or_default(),
                 });
             }
             Ok(Json(data))
@@ -216,6 +219,7 @@ pub async fn get_lms_route_suggestions(
             actual_start_time:     lms_node.get("actual_start_time").unwrap_or_default(),
             actual_end_time:       lms_node.get("actual_end_time").unwrap_or_default(),
             dock_sequence:         lms_node.get("dock_sequence").unwrap_or_default(),
+            aca:                   lms_node.get("aca").unwrap_or_default(),
         });
     }
     Ok(Json(data))
@@ -2362,6 +2366,7 @@ pub async fn get_conflicting_deliveries(
                 schedule_arrival_time: node.get("schedule_arrival_time").unwrap_or_default(),
                 schedule_start_time:   node.get("schedule_start_time").unwrap_or_default(),
                 dock_sequence:         node.get("dock_sequence").unwrap_or_default(),
+                aca:                   node.get("aca").unwrap_or_default(),
                 actual_start_time:     node.get("actual_start_time").unwrap_or_default(),
                 actual_end_time:       node.get("actual_end_time").unwrap_or_default(),
             });

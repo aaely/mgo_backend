@@ -92,6 +92,8 @@ pub struct LMSRecord {
     pub actual_start_time:     String,
     pub actual_end_time:       String,
     pub dock_sequence:         String,
+    #[serde(default)]
+    pub aca:                   String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
