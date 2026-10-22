@@ -1,5 +1,5 @@
 use crate::structs::*;
-use crate::helpers::{build_update_query, edit_ref_for, get_requested_fields, recently_delivered, trailer_field};
+use crate::helpers::{build_update_query, edit_ref_for, get_requested_fields, lowest_doh_deck, post_slack_message, recently_delivered, trailer_field};
 use crate::permissions;
 use crate::auth::{AuthenticatedUser, AdminOrManager, AdminOnly, AdminOrSupervisor};
 use crate::role::Role;
@@ -3254,26 +3254,49 @@ pub async fn close_hot_part(
     Ok(Json("Hot part resolved"))
 }
 
+/// Which Slack channel a live sheet notification goes to. The client picks the
+/// channel, never the env var, so it can't post through an arbitrary webhook.
+#[derive(serde::Deserialize, Default, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum SlackChannel {
+    #[default]
+    Late,
+    Reschedules,
+}
+
+impl SlackChannel {
+    fn webhook_var(self) -> &'static str {
+        match self {
+            SlackChannel::Late        => "SLACK_WEBHOOK_LATE",
+            SlackChannel::Reschedules => "SLACK_WEBHOOK_RESCHEDULES",
+        }
+    }
+}
+
 #[derive(serde::Deserialize)]
 pub struct SlackPayload {
     pub text: String,
+    #[serde(default)]
+    pub channel: SlackChannel,
+    /// The trailer's route, to name the deck of its lowest-DOH part.
+    #[serde(default)]
+    pub route: String,
 }
 
 #[post("/api/send_slack", data = "<payload>")]
 pub async fn send_slack(
     payload: Json<SlackPayload>,
+    state:   &State<AppState>,
     _user:   AuthenticatedUser,
 ) -> Result<Json<&'static str>, Json<&'static str>> {
-    let webhook_url = std::env::var("SLACK_WEBHOOK_URL")
-        .map_err(|_| Json("SLACK_WEBHOOK_URL not configured"))?;
+    // Appended to the message's last line, which carries the trailer details
+    let deck = lowest_doh_deck(&state.graph, &payload.route).await;
+    let text = if deck.is_empty() { payload.text.clone() } else { format!("{} | Deck: {}", payload.text, deck) };
 
-    let client = reqwest::Client::new();
-    client
-        .post(&webhook_url)
-        .json(&serde_json::json!({ "text": payload.text }))
-        .send()
-        .await
-        .map_err(|_| Json("Slack request failed"))?;
+    post_slack_message(payload.channel.webhook_var(), &text).await.map_err(|e| {
+        eprintln!("Failed to send Slack notification: {:?}", e);
+        Json("Slack request failed")
+    })?;
 
     Ok(Json("ok"))
 }
@@ -3284,29 +3307,11 @@ pub async fn send_rescheduled_slack(
     state:    &State<AppState>,
     _user:    AuthenticatedUser,
 ) -> Result<Json<&'static str>, Json<&'static str>> {
-    let webhook_url = std::env::var("SLACK_WEBHOOK_URL")
-        .map_err(|_| Json("SLACK_WEBHOOK_URL not configured"))?;
-
     let graph = &state.graph;
 
     let mut lines: Vec<String> = Vec::new();
     for (i, trl) in trailers.iter().enumerate() {
-        let prefix = trl.route_id.to_lowercase().chars().take(6).collect::<String>();
-        let deck = {
-            let q = neo4rs::query("
-                MATCH (r:PartRoute) WHERE toLower(r.route) STARTS WITH $prefix
-                MATCH (p:PartASL {part: r.part})
-                RETURN p.deck AS deck LIMIT 1
-            ").param("prefix", prefix);
-            match graph.execute(q).await {
-                Ok(mut res) => {
-                    if let Ok(Some(row)) = res.next().await {
-                        row.get::<String>("deck").unwrap_or_default()
-                    } else { String::new() }
-                }
-                Err(_) => String::new(),
-            }
-        };
+        let deck = lowest_doh_deck(graph, &trl.route_id).await;
 
         let deck_str = if deck.is_empty() { String::new() } else { format!(" | Deck: {}", deck) };
         lines.push(format!(
@@ -3319,13 +3324,10 @@ pub async fn send_rescheduled_slack(
 
     let text = format!("*Rescheduled Trailers ({})*\n{}", trailers.len(), lines.join("\n"));
 
-    let client = reqwest::Client::new();
-    client
-        .post(&webhook_url)
-        .json(&serde_json::json!({ "text": text }))
-        .send()
-        .await
-        .map_err(|_| Json("Slack request failed"))?;
+    post_slack_message(SlackChannel::Reschedules.webhook_var(), &text).await.map_err(|e| {
+        eprintln!("Failed to send rescheduled trailers to Slack: {:?}", e);
+        Json("Slack request failed")
+    })?;
 
     Ok(Json("ok"))
 }

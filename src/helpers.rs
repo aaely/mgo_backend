@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use chrono::{DateTime, Duration, NaiveDate, Utc, Timelike, Datelike};
+use chrono::{DateTime, Duration, NaiveDate, Utc, Timelike};
 use neo4rs::query;
 use crate::structs::TrailerRecord;
 
@@ -333,4 +333,34 @@ pub fn edit_ref_for(user_map: &mut HashMap<String, String>, uuid: &str) -> Strin
     let edit_ref = uuid::Uuid::new_v4().to_string();
     user_map.insert(edit_ref.clone(), uuid.to_string());
     edit_ref
+}
+
+/// Deck of the route's lowest-DOH part — the part get_first_supplier names.
+/// Routes match on their first 6 characters, as there; empty when nothing on
+/// the route has a DOH or the route is too short to match safely.
+pub async fn lowest_doh_deck(graph: &neo4rs::Graph, route: &str) -> String {
+    let prefix: String = route.trim().to_lowercase().chars().take(6).collect();
+    if prefix.chars().count() < 6 {
+        return String::new();
+    }
+
+    let q = query("
+        MATCH (r:PartRoute) WHERE toLower(r.route) STARTS WITH $prefix
+        MATCH (a:PartASL {part: r.part})
+        WHERE a.doh IS NOT NULL
+        RETURN a.deck AS deck
+        ORDER BY a.doh ASC, r.part ASC
+        LIMIT 1
+    ").param("prefix", prefix);
+
+    match graph.execute(q).await {
+        Ok(mut result) => match result.next().await {
+            Ok(Some(row)) => row.get::<String>("deck").unwrap_or_default(),
+            _ => String::new(),
+        },
+        Err(e) => {
+            eprintln!("lowest_doh_deck error: {e}");
+            String::new()
+        }
+    }
 }
