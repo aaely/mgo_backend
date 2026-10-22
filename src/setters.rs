@@ -609,9 +609,11 @@ pub async fn upload_exception(
     let graph = &state.graph;
     let mut created_lines = Vec::<ExceptionLogEntry>::new();
 
-    // Refuse a delivery into a route's blacked-out hour before writing anything.
-    // A real 4xx (not 200 + text) so the form sees it and keeps the entry open.
+    // Refuse a delivery into a route's blacked-out hour before writing anything,
+    // unless the user acknowledged approval for it. A real 4xx (not 200 + text)
+    // so the form sees it and keeps the entry open.
     if let Some(msg) = find_blackout(graph, upload_exception.iter()
+        .filter(|l| !l.blackoutApproved)
         .map(|l| (l.route.as_str(), l.newTime.as_str()))).await?
     {
         return Err((Status::UnprocessableEntity, Json(msg)));
@@ -637,7 +639,9 @@ pub async fn upload_exception(
                 e.comment         = $comment,
                 e.requestor       = $requestor,
                 e.isRepower       = $isRepower,
-                e.repowerLoadNum  = $repowerLoadNum
+                e.repowerLoadNum  = $repowerLoadNum,
+                e.blackoutApprovedBy = $approvedBy,
+                e.blackoutApprovedAt = $approvedAt
             ON MATCH SET
                 e.type            = $type,
                 e.status          = $status,
@@ -655,7 +659,9 @@ pub async fn upload_exception(
                 e.comment         = $comment,
                 e.requestor       = $requestor,
                 e.isRepower       = $isRepower,
-                e.repowerLoadNum  = $repowerLoadNum
+                e.repowerLoadNum  = $repowerLoadNum,
+                e.blackoutApprovedBy = $approvedBy,
+                e.blackoutApprovedAt = $approvedAt
             RETURN e
         ")
         .param("loadNum",      line.loadNum.clone())
@@ -677,7 +683,10 @@ pub async fn upload_exception(
         .param("comment",         line.comment.clone())
         .param("requestor",       line.requestor.clone())
         .param("isRepower",       line.isRepower)
-        .param("repowerLoadNum",  line.repowerLoadNum.clone());
+        .param("repowerLoadNum",  line.repowerLoadNum.clone())
+        // Who acknowledged approval for a blacked-out hour, and when; null otherwise
+        .param("approvedBy",      line.blackoutApproved.then(|| user.0.username.clone()))
+        .param("approvedAt",      line.blackoutApproved.then(|| chrono::Utc::now().format("%Y-%m-%d %H:%M").to_string()));
 
         match graph.execute(query).await {
             Ok(mut result) => {
@@ -761,8 +770,10 @@ pub async fn upload_dycomm(
     let graph = &state.graph;
     let mut created_lines = Vec::<DyCommLogEntry>::new();
 
-    // Refuse a delivery into a route's blacked-out hour before writing anything.
+    // Refuse a delivery into a route's blacked-out hour before writing anything,
+    // unless the user acknowledged approval for it.
     if let Some(msg) = find_blackout(graph, upload_dycomm.iter()
+        .filter(|l| !l.blackoutApproved)
         .map(|l| (l.route.as_str(), l.deliveryTime.as_str()))).await?
     {
         return Err((Status::UnprocessableEntity, Json(msg)));
@@ -784,7 +795,9 @@ pub async fn upload_dycomm(
                 d.pdt          = $pdt,
                 d.createdBy    = $createdBy,
                 d.createdAt    = $updated_at,
-                d.updatedAt    = $updated_at
+                d.updatedAt    = $updated_at,
+                d.blackoutApprovedBy = $approvedBy,
+                d.blackoutApprovedAt = $approvedAt
             ON MATCH SET
                 d.scac         = $scac,
                 d.route        = $route,
@@ -794,7 +807,9 @@ pub async fn upload_dycomm(
                 d.supplier     = $supplier,
                 d.part         = $part,
                 d.pdt          = $pdt,
-                d.updatedAt    = $updated_at
+                d.updatedAt    = $updated_at,
+                d.blackoutApprovedBy = $approvedBy,
+                d.blackoutApprovedAt = $approvedAt
             RETURN d
         ")
         .param("loadNum",      line.loadNum.clone())
@@ -809,7 +824,10 @@ pub async fn upload_dycomm(
         .param("part",         line.part.clone())
         .param("pdt",          line.pdt.clone())
         .param("updated_at",    updated_at.clone())
-        .param("createdBy",    line.createdBy.clone());
+        .param("createdBy",    line.createdBy.clone())
+        // Who acknowledged approval for a blacked-out hour, and when; null otherwise
+        .param("approvedBy",   line.blackoutApproved.then(|| user.0.username.clone()))
+        .param("approvedAt",   line.blackoutApproved.then(|| updated_at.clone()));
 
         match graph.execute(query).await {
             Ok(mut result) => {

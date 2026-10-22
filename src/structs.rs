@@ -287,6 +287,9 @@ pub struct ExceptionLogEntry {
     pub requestor: String,
     pub isRepower: bool,
     pub repowerLoadNum: String,
+    /// The user acknowledged approval to deliver in a blacked-out hour
+    #[serde(default)]
+    pub blackoutApproved: bool,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Default, Debug)]
@@ -303,6 +306,9 @@ pub struct DyCommLogEntry {
     pub part: String,
     pub pdt: String,
     pub createdBy: String,
+    /// The user acknowledged approval to deliver in a blacked-out hour
+    #[serde(default)]
+    pub blackoutApproved: bool,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Default, Debug, Clone)]
