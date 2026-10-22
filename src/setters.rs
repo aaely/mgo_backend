@@ -1158,55 +1158,22 @@ pub async fn roll_next_shift(
     let operational_date = req.operational_date.clone();
 
     // ── Query 1: Snapshot all LiveTrailers into TrailerRecords ──
+    // Every property is copied, so fields added to trailers later are archived
+    // without touching this query. Only statusOX is recomputed.
     let snapshot_query = query("
         MERGE (o:OpDate {date: $operational_date})
         WITH o
         MATCH (t:LiveTrailer)
-        CREATE (r:TrailerRecord {
-            uuid:               t.uuid,
-            hour:               t.hour,
-            dateShift:          t.dateShift,
-            lmsAccent:          t.lmsAccent,
-            dockCode:           t.dockCode,
-            acaType:            t.acaType,
-            status:             t.status,
-            routeId:            t.routeId,
-            scac:               t.scac,
-            trailer1:           t.trailer1,
-            trailer2:           t.trailer2,
-            firstSupplier:      t.firstSupplier,
-            dockStopSequence:   t.dockStopSequence,
-            planStartDate:      t.planStartDate,
-            planStartTime:      t.planStartTime,
-            scheduleStartDate:  t.scheduleStartDate,
-            adjustedStartTime:  t.adjustedStartTime,
-            scheduleEndDate:    t.scheduleEndDate,
-            scheduleEndTime:    t.scheduleEndTime,
-            gateArrivalTime:    t.gateArrivalTime,
-            actualStartTime:    t.actualStartTime,
-            actualEndTime:      t.actualEndTime,
-            // 'U' (Not Marked): stat X says it was received, but no one entered
-            // an end time — the floor didn't finish marking it, so it's neither a
-            // no-show nor a carryover. Rescheduled trailers keep their 'R'.
-            statusOX:           CASE
-                                    WHEN t.statusOX <> 'R' AND t.actualEndTime = '' AND coalesce(t.stat, '') = 'X' THEN 'U'
-                                    WHEN t.gateArrivalTime = '' AND t.actualEndTime = '' THEN 'N'
-                                    ELSE t.statusOX
-                                END,
-            stat:               t.stat,
-            lowestDoh:          t.lowestDoh,
-            loadComments:       t.loadComments,
-            ryderComments:      t.ryderComments,
-            gmComments:         t.gmComments,
-            door:               t.door,
-            doorArrivalTime:    t.doorArrivalTime,
-            gateArrivalDate:    t.gateArrivalDate,
-            doorArrivalDate:    t.doorArrivalDate,
-            actualStartDate:    t.actualStartDate,
-            actualEndDate:      t.actualEndDate,
-            receivedDate:       coalesce(t.receivedDate, ''),
-            receivedTime:       coalesce(t.receivedTime, '')
-        })
+        CREATE (r:TrailerRecord)
+        // 'U' (Not Marked): stat X says it was received, but no one entered an
+        // end time — the floor didn't finish marking it, so it's neither a
+        // no-show nor a carryover. Rescheduled trailers keep their 'R'.
+        SET r = properties(t),
+            r.statusOX = CASE
+                WHEN t.statusOX <> 'R' AND t.actualEndTime = '' AND coalesce(t.stat, '') = 'X' THEN 'U'
+                WHEN t.gateArrivalTime = '' AND t.actualEndTime = '' THEN 'N'
+                ELSE t.statusOX
+            END
         CREATE (o)-[:HAS_TRAILER]->(r)
     ")
     .param("operational_date", operational_date.clone());
@@ -1220,39 +1187,8 @@ pub async fn roll_next_shift(
     let reschedule_query = query("
         MATCH (t:LiveTrailer)
         WHERE t.statusOX = 'R'
-        CREATE (r:RescheduledTrailer {
-            uuid:              t.uuid,
-            hour:              t.hour,
-            dateShift:         t.dateShift,
-            lmsAccent:         t.lmsAccent,
-            dockCode:          t.dockCode,
-            acaType:           t.acaType,
-            status:            t.status,
-            routeId:           t.routeId,
-            scac:              t.scac,
-            trailer1:          t.trailer1,
-            trailer2:          t.trailer2,
-            firstSupplier:     t.firstSupplier,
-            dockStopSequence:  t.dockStopSequence,
-            planStartDate:     t.planStartDate,
-            planStartTime:     t.planStartTime,
-            scheduleStartDate: t.scheduleStartDate,
-            adjustedStartTime: t.adjustedStartTime,
-            scheduleEndDate:   t.scheduleEndDate,
-            scheduleEndTime:   t.scheduleEndTime,
-            gateArrivalTime:   t.gateArrivalTime,
-            actualStartTime:   t.actualStartTime,
-            actualEndTime:     t.actualEndTime,
-            statusOX:          t.statusOX,
-            lowestDoh:         t.lowestDoh,
-            loadComments:      t.loadComments,
-            ryderComments:     t.ryderComments,
-            gmComments:        t.gmComments,
-            gateArrivalDate:   t.gateArrivalDate,
-            doorArrivalDate:   t.doorArrivalDate,
-            actualStartDate:   t.actualStartDate,
-            actualEndDate:     t.actualEndDate
-        })
+        CREATE (r:RescheduledTrailer)
+        SET r = properties(t)
     ");
 
     graph.run(reschedule_query).await.map_err(|e| {
@@ -1260,13 +1196,15 @@ pub async fn roll_next_shift(
         Json("Failed to push rescheduled trailers")
     })?;
 
-    // ── Query 3: Delete rescheduled, completed, no-show and not-marked LiveTrailers ──
+    // ── Query 3: Delete rescheduled, already-delivered, completed, no-show and not-marked LiveTrailers ──
+    // Already delivered (D) is dropped like R but, with nothing left to deliver,
+    // isn't pushed to RescheduledTrailer by Query 2.
     // No-shows and not-marked don't roll forward; Query 1 already archived them as
     // statusOX 'N' and 'U'. What survives is exactly the arrived-but-unfinished
     // carryover set.
     let delete_query = query("
         MATCH (t:LiveTrailer)
-        WHERE t.statusOX = 'R'
+        WHERE t.statusOX IN ['R', 'D']
            OR (t.gateArrivalTime <> '' AND t.actualEndTime <> '')
            OR (t.gateArrivalTime = '' AND t.actualEndTime = '')
            OR (t.actualEndTime = '' AND coalesce(t.stat, '') = 'X')
@@ -1296,43 +1234,14 @@ pub async fn roll_next_shift(
     })?;
 
     // ── Query 5: Promote StagedTrailers to LiveTrailers and delete StagedTrailer nodes ──
+    // Every property is copied except door and door arrival, which start blank on
+    // the live sheet.
     let promote_query = query("
         MATCH (s:StagedTrailer)
-        CREATE (t:LiveTrailer {
-            uuid:               s.uuid,
-            hour:               s.hour,
-            dateShift:          s.dateShift,
-            lmsAccent:          s.lmsAccent,
-            dockCode:           s.dockCode,
-            acaType:            s.acaType,
-            status:             s.status,
-            routeId:            s.routeId,
-            scac:               s.scac,
-            trailer1:           s.trailer1,
-            trailer2:           s.trailer2,
-            firstSupplier:      s.firstSupplier,
-            dockStopSequence:   s.dockStopSequence,
-            planStartDate:      s.planStartDate,
-            planStartTime:      s.planStartTime,
-            scheduleStartDate:  s.scheduleStartDate,
-            adjustedStartTime:  s.adjustedStartTime,
-            scheduleEndDate:    s.scheduleEndDate,
-            scheduleEndTime:    s.scheduleEndTime,
-            gateArrivalTime:    s.gateArrivalTime,
-            actualStartTime:    s.actualStartTime,
-            actualEndTime:      s.actualEndTime,
-            statusOX:           s.statusOX,
-            lowestDoh:          s.lowestDoh,
-            loadComments:       s.loadComments,
-            ryderComments:      s.ryderComments,
-            gmComments:         s.gmComments,
-            door:               '',
-            doorArrivalTime:    '',
-            gateArrivalDate:    s.gateArrivalDate,
-            doorArrivalDate:    s.doorArrivalDate,
-            actualStartDate:    s.actualStartDate,
-            actualEndDate:      s.actualEndDate
-        })
+        CREATE (t:LiveTrailer)
+        SET t = properties(s),
+            t.door            = '',
+            t.doorArrivalTime = ''
         DELETE s
     ");
 
