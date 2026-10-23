@@ -599,6 +599,21 @@ pub async fn upload_in_transit(
     Ok(Json("In-transit data uploaded and processed successfully"))
 }
 
+/// An approval for a blacked-out hour has to name who approved it and why. The
+/// first approved row missing either, as a message for the form.
+fn missing_blackout_details<'a>(rows: impl IntoIterator<Item = (bool, &'a str, &'a str)>) -> Option<String> {
+    rows.into_iter()
+        .any(|(approved, approver, reason)| approved && (approver.trim().is_empty() || reason.trim().is_empty()))
+        .then(|| "Scheduling in a blacked-out hour needs the approver's initials and a reason".to_string())
+}
+
+/// Approver initials (upper-cased) and reason to store, or nulls when the row
+/// wasn't approved — so an edit out of the blacked-out hour clears them.
+fn blackout_details(approved: bool, approver: &str, reason: &str) -> (Option<String>, Option<String>) {
+    if !approved { return (None, None) }
+    (Some(approver.trim().to_uppercase()), Some(reason.trim().to_string()))
+}
+
 #[post("/api/upload_exception", format = "json", data = "<upload_exception>")]
 pub async fn upload_exception(
     upload_exception: Json<Vec<ExceptionLogEntry>>,
@@ -608,6 +623,12 @@ pub async fn upload_exception(
 ) -> Result<Json<Vec<ExceptionLogEntry>>, (Status, Json<String>)> {
     let graph = &state.graph;
     let mut created_lines = Vec::<ExceptionLogEntry>::new();
+
+    if let Some(msg) = missing_blackout_details(upload_exception.iter()
+        .map(|l| (l.blackoutApproved, l.blackoutApprover.as_str(), l.blackoutReason.as_str())))
+    {
+        return Err((Status::UnprocessableEntity, Json(msg)));
+    }
 
     // Refuse a delivery into a route's blacked-out hour before writing anything,
     // unless the user acknowledged approval for it. A real 4xx (not 200 + text)
@@ -626,6 +647,7 @@ pub async fn upload_exception(
     }
 
     for line in upload_exception.iter() {
+        let (approver, reason) = blackout_details(line.blackoutApproved, &line.blackoutApprover, &line.blackoutReason);
         let query = query("
             MERGE (e:ExceptionLogEntry {loadNum: $loadNum, dock: $dock, trailer1: $trailer1})
             ON CREATE SET
@@ -647,7 +669,9 @@ pub async fn upload_exception(
                 e.isRepower       = $isRepower,
                 e.repowerLoadNum  = $repowerLoadNum,
                 e.blackoutApprovedBy = $approvedBy,
-                e.blackoutApprovedAt = $approvedAt
+                e.blackoutApprovedAt = $approvedAt,
+                e.blackoutApprover   = $approver,
+                e.blackoutReason     = $reason
             ON MATCH SET
                 e.type            = $type,
                 e.status          = $status,
@@ -667,7 +691,9 @@ pub async fn upload_exception(
                 e.isRepower       = $isRepower,
                 e.repowerLoadNum  = $repowerLoadNum,
                 e.blackoutApprovedBy = $approvedBy,
-                e.blackoutApprovedAt = $approvedAt
+                e.blackoutApprovedAt = $approvedAt,
+                e.blackoutApprover   = $approver,
+                e.blackoutReason     = $reason
             RETURN e
         ")
         .param("loadNum",      line.loadNum.clone())
@@ -692,7 +718,9 @@ pub async fn upload_exception(
         .param("repowerLoadNum",  line.repowerLoadNum.clone())
         // Who acknowledged approval for a blacked-out hour, and when; null otherwise
         .param("approvedBy",      line.blackoutApproved.then(|| user.0.username.clone()))
-        .param("approvedAt",      line.blackoutApproved.then(|| chrono::Utc::now().format("%Y-%m-%d %H:%M").to_string()));
+        .param("approvedAt",      line.blackoutApproved.then(|| chrono::Utc::now().format("%Y-%m-%d %H:%M").to_string()))
+        .param("approver",        approver)
+        .param("reason",          reason);
 
         match graph.execute(query).await {
             Ok(mut result) => {
@@ -723,6 +751,8 @@ pub async fn upload_exception(
                         isRepower:      e.get("isRepower").unwrap_or(false),
                         repowerLoadNum: e.get("repowerLoadNum").unwrap_or_default(),
                         blackoutApproved: e.get::<String>("blackoutApprovedBy").is_ok(),
+                        blackoutApprover: e.get("blackoutApprover").unwrap_or_default(),
+                        blackoutReason:   e.get("blackoutReason").unwrap_or_default(),
                     };
 
                     // ── Audit trail: log exception upload ──
@@ -777,6 +807,12 @@ pub async fn upload_dycomm(
     let graph = &state.graph;
     let mut created_lines = Vec::<DyCommLogEntry>::new();
 
+    if let Some(msg) = missing_blackout_details(upload_dycomm.iter()
+        .map(|l| (l.blackoutApproved, l.blackoutApprover.as_str(), l.blackoutReason.as_str())))
+    {
+        return Err((Status::UnprocessableEntity, Json(msg)));
+    }
+
     // Refuse a delivery into a route's blacked-out hour before writing anything,
     // unless the user acknowledged approval for it.
     if let Some(msg) = find_blackout(graph, upload_dycomm.iter()
@@ -789,6 +825,7 @@ pub async fn upload_dycomm(
     let updated_at = chrono::Utc::now().format("%Y-%m-%d %H:%M").to_string();
 
     for line in upload_dycomm.iter() {
+        let (approver, reason) = blackout_details(line.blackoutApproved, &line.blackoutApprover, &line.blackoutReason);
         let query = query("
             MERGE (d:DyCommLogEntry {loadNum: $loadNum, dock: $dock, trailer: $trailer})
             ON CREATE SET
@@ -804,7 +841,9 @@ pub async fn upload_dycomm(
                 d.createdAt    = $updated_at,
                 d.updatedAt    = $updated_at,
                 d.blackoutApprovedBy = $approvedBy,
-                d.blackoutApprovedAt = $approvedAt
+                d.blackoutApprovedAt = $approvedAt,
+                d.blackoutApprover   = $approver,
+                d.blackoutReason     = $reason
             ON MATCH SET
                 d.scac         = $scac,
                 d.route        = $route,
@@ -816,7 +855,9 @@ pub async fn upload_dycomm(
                 d.pdt          = $pdt,
                 d.updatedAt    = $updated_at,
                 d.blackoutApprovedBy = $approvedBy,
-                d.blackoutApprovedAt = $approvedAt
+                d.blackoutApprovedAt = $approvedAt,
+                d.blackoutApprover   = $approver,
+                d.blackoutReason     = $reason
             RETURN d
         ")
         .param("loadNum",      line.loadNum.clone())
@@ -834,7 +875,9 @@ pub async fn upload_dycomm(
         .param("createdBy",    line.createdBy.clone())
         // Who acknowledged approval for a blacked-out hour, and when; null otherwise
         .param("approvedBy",   line.blackoutApproved.then(|| user.0.username.clone()))
-        .param("approvedAt",   line.blackoutApproved.then(|| updated_at.clone()));
+        .param("approvedAt",   line.blackoutApproved.then(|| updated_at.clone()))
+        .param("approver",     approver)
+        .param("reason",       reason);
 
         match graph.execute(query).await {
             Ok(mut result) => {
@@ -857,6 +900,8 @@ pub async fn upload_dycomm(
                         pdt:          d.get("pdt").unwrap_or_default(),
                         createdBy:    d.get("createdBy").unwrap_or_default(),
                         blackoutApproved: d.get::<String>("blackoutApprovedBy").is_ok(),
+                        blackoutApprover: d.get("blackoutApprover").unwrap_or_default(),
+                        blackoutReason:   d.get("blackoutReason").unwrap_or_default(),
                     };
 
                     // ── Audit trail: log dycomm upload ──

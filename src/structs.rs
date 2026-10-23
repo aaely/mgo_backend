@@ -290,6 +290,12 @@ pub struct ExceptionLogEntry {
     /// The user acknowledged approval to deliver in a blacked-out hour
     #[serde(default)]
     pub blackoutApproved: bool,
+    /// Initials of whoever approved the blacked-out hour; required with blackoutApproved
+    #[serde(default)]
+    pub blackoutApprover: String,
+    /// Why the load has to come in during the blacked-out hour; required with blackoutApproved
+    #[serde(default)]
+    pub blackoutReason: String,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Default, Debug)]
@@ -309,6 +315,12 @@ pub struct DyCommLogEntry {
     /// The user acknowledged approval to deliver in a blacked-out hour
     #[serde(default)]
     pub blackoutApproved: bool,
+    /// Initials of whoever approved the blacked-out hour; required with blackoutApproved
+    #[serde(default)]
+    pub blackoutApprover: String,
+    /// Why the load has to come in during the blacked-out hour; required with blackoutApproved
+    #[serde(default)]
+    pub blackoutReason: String,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Default, Debug, Clone)]

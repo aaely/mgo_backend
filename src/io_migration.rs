@@ -276,6 +276,8 @@ pub async fn export_io(
             isRepower:      e.get::<bool>("isRepower").unwrap_or(false),
             repowerLoadNum: str_prop(&e, "repowerLoadNum"),
             blackoutApproved: e.get::<String>("blackoutApprovedBy").is_ok(),
+            blackoutApprover: str_prop(&e, "blackoutApprover"),
+            blackoutReason:   str_prop(&e, "blackoutReason"),
         });
     }
 
