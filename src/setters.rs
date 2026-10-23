@@ -612,8 +612,14 @@ pub async fn upload_exception(
     // Refuse a delivery into a route's blacked-out hour before writing anything,
     // unless the user acknowledged approval for it. A real 4xx (not 200 + text)
     // so the form sees it and keeps the entry open.
+    //
+    // IO Schedule's entries (load # or type starting "IO", the same test
+    // io_migration uses) are never checked: IO containers have no blacked-out
+    // hours, and IO Schedule saves the trailer before this entry, so a refusal
+    // would leave it scheduled with no log entry.
     if let Some(msg) = find_blackout(graph, upload_exception.iter()
         .filter(|l| !l.blackoutApproved)
+        .filter(|l| !l.loadNum.starts_with("IO") && !l.r#type.starts_with("IO"))
         .map(|l| (l.route.as_str(), l.newTime.as_str()))).await?
     {
         return Err((Status::UnprocessableEntity, Json(msg)));
@@ -716,6 +722,7 @@ pub async fn upload_exception(
                         requestor:      e.get("requestor").unwrap_or_default(),
                         isRepower:      e.get("isRepower").unwrap_or(false),
                         repowerLoadNum: e.get("repowerLoadNum").unwrap_or_default(),
+                        blackoutApproved: e.get::<String>("blackoutApprovedBy").is_ok(),
                     };
 
                     // ── Audit trail: log exception upload ──
@@ -849,6 +856,7 @@ pub async fn upload_dycomm(
                         part:         d.get("part").unwrap_or_default(),
                         pdt:          d.get("pdt").unwrap_or_default(),
                         createdBy:    d.get("createdBy").unwrap_or_default(),
+                        blackoutApproved: d.get::<String>("blackoutApprovedBy").is_ok(),
                     };
 
                     // ── Audit trail: log dycomm upload ──

@@ -261,6 +261,8 @@ pub async fn get_dy(
                     part: dy_node.get("part").unwrap_or_default(),
                     pdt: dy_node.get("pdt").unwrap_or_default(),
                     createdBy: dy_node.get("createdBy").unwrap_or_default(),
+                    // Saved only on approved entries, so its presence is the flag
+                    blackoutApproved: dy_node.get::<String>("blackoutApprovedBy").is_ok(),
                 };
                 data.push(entry);
             }
@@ -414,6 +416,8 @@ pub async fn get_exceptions(
                     requestor:       node.get("requestor").unwrap_or_default(),
                     isRepower:       node.get("isRepower").unwrap_or(false),
                     repowerLoadNum:  node.get("repowerLoadNum").unwrap_or_default(),
+                    // Saved only on approved entries, so its presence is the flag
+                    blackoutApproved: node.get::<String>("blackoutApprovedBy").is_ok(),
                 };
                 entries.push(record);
             }
