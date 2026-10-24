@@ -1,10 +1,15 @@
-//! Route blackouts: hours a route can't be delivered in. Set by admins on the
-//! Route Blackouts page; the Exception Log and DY Log won't schedule a delivery
-//! into one, and the upload routes refuse it here too so nothing gets around it.
+//! Route blackouts: 15-minute windows a route can't be delivered in. Set by admins
+//! on the Route Blackouts page; the Exception Log and DY Log won't schedule a
+//! delivery into one, and the upload routes refuse it here too so nothing gets
+//! around it.
 //!
-//! (:RouteBlackout {route, hours}) — one node per route with any blacked-out
-//! hour; `route` is the full route ID uppercased, `hours` the delivery hours
-//! (0-23) it can't be delivered in. A route with no node has no restriction.
+//! (:RouteBlackout {route, slots}) — one node per route with any blacked-out
+//! window; `route` is the full route ID uppercased, `slots` the start minute of
+//! the day (0, 15, ... 1425) of each window it can't be delivered in. A route
+//! with no node has no restriction.
+//!
+//! Nodes saved before windows were 15 minutes carry `hours` (0-23) instead; each
+//! reads as all four of that hour's windows until the route is next saved.
 
 use crate::auth::{AdminOnly, AuthenticatedUser};
 use crate::structs::{AppState, IncomingMessage, MessageData};
@@ -23,7 +28,19 @@ pub const WS_ROUTE_BLACKOUTS: &str = "route_blackouts";
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RouteBlackout {
     pub route: String,
-    pub hours: Vec<i64>,
+    pub slots: Vec<i64>,
+}
+
+/// Minutes in a blackout window.
+pub const SLOT_MINUTES: i64 = 15;
+
+fn valid_slot(slot: i64) -> bool {
+    (0..24 * 60).contains(&slot) && slot % SLOT_MINUTES == 0
+}
+
+/// 'HH:MM' for a slot's start minute.
+pub fn slot_label(slot: i64) -> String {
+    format!("{:02}:{:02}", slot / 60, slot % 60)
 }
 
 fn server_error(context: &str, e: impl std::fmt::Debug) -> ApiError {
@@ -36,21 +53,33 @@ pub fn route_key(route: &str) -> String {
     route.trim().to_uppercase()
 }
 
-/// The delivery hour of an 'HH:MM' time; None when there's no time yet.
-pub fn delivery_hour(time: &str) -> Option<i64> {
-    time.trim().split(':').next()?.parse::<i64>().ok().filter(|h| (0..=23).contains(h))
+/// The window an 'HH:MM' delivery time falls in, as its start minute of the day
+/// ("14:37" -> 870, the 14:30 window); None when there's no usable time yet.
+pub fn delivery_slot(time: &str) -> Option<i64> {
+    let mut parts = time.trim().splitn(2, ':');
+    let hour = parts.next()?.trim().parse::<i64>().ok().filter(|h| (0..=23).contains(h))?;
+    let minute = match parts.next() {
+        Some(m) => m.trim().get(..2).unwrap_or(m.trim()).parse::<i64>().ok().filter(|m| (0..=59).contains(m))?,
+        None    => 0,
+    };
+    Some(hour * 60 + minute / SLOT_MINUTES * SLOT_MINUTES)
 }
 
 async fn read_all(graph: &Graph) -> Result<Vec<RouteBlackout>, neo4rs::Error> {
     let mut result = graph.execute(query("
-        MATCH (b:RouteBlackout) RETURN b.route AS route, b.hours AS hours ORDER BY route
+        MATCH (b:RouteBlackout)
+        RETURN b.route AS route, b.slots AS slots, b.hours AS hours ORDER BY route
     ")).await?;
     let mut out = Vec::new();
     while let Ok(Some(row)) = result.next().await {
-        out.push(RouteBlackout {
-            route: row.get("route").unwrap_or_default(),
-            hours: row.get("hours").unwrap_or_default(),
-        });
+        // An hours-only node predates 15-minute windows: the whole hour is out
+        let slots: Vec<i64> = match row.get::<Vec<i64>>("slots") {
+            Ok(slots) => slots,
+            Err(_) => row.get::<Vec<i64>>("hours").unwrap_or_default().into_iter()
+                .flat_map(|h| (0..60 / SLOT_MINUTES).map(move |q| h * 60 + q * SLOT_MINUTES))
+                .collect(),
+        };
+        out.push(RouteBlackout { route: row.get("route").unwrap_or_default(), slots });
     }
     Ok(out)
 }
@@ -84,13 +113,14 @@ pub async fn set_route_blackouts(
         if !seen.insert(route.clone()) {
             return Err((Status::BadRequest, Json(format!("{route} is listed twice"))));
         }
-        if let Some(h) = b.hours.iter().find(|h| !(0..=23).contains(*h)) {
-            return Err((Status::BadRequest, Json(format!("{route}: hour {h} isn't 0-23"))));
+        if let Some(m) = b.slots.iter().find(|m| !valid_slot(**m)) {
+            return Err((Status::BadRequest, Json(format!(
+                "{route}: {m} isn't the start of a {SLOT_MINUTES}-minute window"))));
         }
-        let hours: Vec<i64> = b.hours.iter().copied().collect::<BTreeSet<_>>().into_iter().collect();
-        // A route with every hour open has no restriction; don't keep a node for it.
-        if !hours.is_empty() {
-            clean.push(RouteBlackout { route, hours });
+        let slots: Vec<i64> = b.slots.iter().copied().collect::<BTreeSet<_>>().into_iter().collect();
+        // A route with every window open has no restriction; don't keep a node for it.
+        if !slots.is_empty() {
+            clean.push(RouteBlackout { route, slots });
         }
     }
 
@@ -100,9 +130,9 @@ pub async fn set_route_blackouts(
     let written: Result<(), neo4rs::Error> = async {
         txn.run(query("MATCH (b:RouteBlackout) DETACH DELETE b")).await?;
         for b in &clean {
-            txn.run(query("CREATE (:RouteBlackout {route: $route, hours: $hours})")
+            txn.run(query("CREATE (:RouteBlackout {route: $route, slots: $slots})")
                 .param("route", b.route.clone())
-                .param("hours", b.hours.clone())).await?;
+                .param("slots", b.slots.clone())).await?;
         }
         Ok(())
     }.await;
@@ -132,8 +162,8 @@ pub async fn set_route_blackouts(
 }
 
 /// Server-side check for the upload routes: the first (route, delivery time)
-/// that lands in a blacked-out hour, as a message for the operator. Rows with no
-/// route or no time yet aren't checked.
+/// that lands in a blacked-out window, as a message for the operator. Rows with
+/// no route or no time yet aren't checked.
 pub async fn find_blackout<'a>(
     graph: &Graph,
     rows:  impl IntoIterator<Item = (&'a str, &'a str)>,
@@ -143,15 +173,15 @@ pub async fn find_blackout<'a>(
         return Ok(None);
     }
     let blackouts: HashMap<String, HashSet<i64>> = all.into_iter()
-        .map(|b| (b.route, b.hours.into_iter().collect()))
+        .map(|b| (b.route, b.slots.into_iter().collect()))
         .collect();
 
     for (route, time) in rows {
-        let (Some(hours), Some(hour)) = (blackouts.get(&route_key(route)), delivery_hour(time)) else { continue };
-        if hours.contains(&hour) {
+        let (Some(slots), Some(slot)) = (blackouts.get(&route_key(route)), delivery_slot(time)) else { continue };
+        if slots.contains(&slot) {
             return Ok(Some(format!(
-                "Route {} can't be delivered at {:02}:00 — that hour is blacked out for it",
-                route_key(route), hour,
+                "Route {} can't be delivered at {}–{} — that window is blacked out for it",
+                route_key(route), slot_label(slot), slot_label((slot + SLOT_MINUTES) % (24 * 60)),
             )));
         }
     }
@@ -162,16 +192,30 @@ pub async fn find_blackout<'a>(
 mod tests {
     use super::*;
 
-    // Same inputs as the frontend's blackedOutHour check, so the two sides agree.
+    // Same inputs as the frontend's deliverySlot check, so the two sides agree.
     #[test]
-    fn delivery_hour_reads_hh_mm() {
-        assert_eq!(delivery_hour("14:30"), Some(14));
-        assert_eq!(delivery_hour("00:15"), Some(0));
-        assert_eq!(delivery_hour("7:05"),  Some(7));
-        assert_eq!(delivery_hour(" 22:00 "), Some(22));
-        assert_eq!(delivery_hour(""),      None);
-        assert_eq!(delivery_hour("24:00"), None);
-        assert_eq!(delivery_hour("abc"),   None);
+    fn delivery_slot_reads_hh_mm() {
+        assert_eq!(delivery_slot("14:30"),   Some(870));
+        assert_eq!(delivery_slot("14:44"),   Some(870));
+        assert_eq!(delivery_slot("14:45"),   Some(885));
+        assert_eq!(delivery_slot("00:15"),   Some(15));
+        assert_eq!(delivery_slot("7:05"),    Some(420));
+        assert_eq!(delivery_slot(" 22:00 "), Some(1320));
+        assert_eq!(delivery_slot("23:59"),   Some(1425));
+        assert_eq!(delivery_slot("14:30:00"), Some(870));
+        assert_eq!(delivery_slot("14"),      Some(840));
+        assert_eq!(delivery_slot(""),        None);
+        assert_eq!(delivery_slot("24:00"),   None);
+        assert_eq!(delivery_slot("14:75"),   None);
+        assert_eq!(delivery_slot("abc"),     None);
+    }
+
+    #[test]
+    fn slots_are_quarter_hours_of_the_day() {
+        assert!(valid_slot(0) && valid_slot(870) && valid_slot(1425));
+        assert!(!valid_slot(7) && !valid_slot(1440) && !valid_slot(-15));
+        assert_eq!(slot_label(870), "14:30");
+        assert_eq!(slot_label(0), "00:00");
     }
 
     #[test]
