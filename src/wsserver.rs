@@ -22,6 +22,7 @@ use crate::structs::{
 };
 use crate::dock_capacity::WS_DOCK_CAPACITY;
 use crate::route_blackouts::WS_ROUTE_BLACKOUTS;
+use crate::part_comments::WS_PART_COMMENT;
 use crate::io_feed::{WS_IO_REFRESH, WS_IO_REMOVED, WS_IO_UPDATE};
 
 #[get("/ws")]
@@ -172,7 +173,7 @@ async fn handle_connection<S>(
                                     // feed, after an IO change). Relayed from a client they
                                     // would let anyone repaint every screen's capacities,
                                     // blackouts or IO trailers with made-up values.
-                                    t if t == WS_DOCK_CAPACITY || t == WS_ROUTE_BLACKOUTS
+                                    t if t == WS_DOCK_CAPACITY || t == WS_ROUTE_BLACKOUTS || t == WS_PART_COMMENT
                                         || t == WS_IO_UPDATE || t == WS_IO_REMOVED || t == WS_IO_REFRESH => {
                                         println!("Dropped client-sent {} from {}", t, peer_addr);
                                         continue;

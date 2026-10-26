@@ -4,13 +4,21 @@
 //! part number with either set. Kept apart from PartASL because every ASL
 //! upload deletes and recreates those, which would wipe these with them.
 //! Once both are empty the node is removed.
+//!
+//! Every save is pushed to all open screens as a `part_comment` websocket
+//! message carrying the saved record (both fields blank once it's removed).
 
 use crate::auth::AuthenticatedUser;
 use crate::role::Role;
-use crate::structs::AppState;
+use crate::structs::{AppState, IncomingMessage, MessageData};
 use neo4rs::query;
 use rocket::{get, http::Status, post, serde::json::Json, State};
 use serde::{Deserialize, Serialize};
+use tokio_tungstenite::tungstenite::Message;
+
+/// Websocket type carrying one saved part comment to every client. Server-sent
+/// only — wsserver refuses to relay it from a client.
+pub const WS_PART_COMMENT: &str = "part_comment";
 
 type ApiError = (Status, Json<String>);
 
@@ -29,6 +37,21 @@ pub struct PartComment {
 fn server_error(context: &str, e: impl std::fmt::Debug) -> ApiError {
     eprintln!("{context}: {e:?}");
     (Status::InternalServerError, Json(context.to_string()))
+}
+
+/// Push a saved comment to every open screen, whatever page or topic it's on.
+async fn broadcast(state: &AppState, saved: &PartComment) {
+    let Ok(payload) = serde_json::to_string(saved) else { return };
+    let ws_msg = IncomingMessage {
+        r#type: WS_PART_COMMENT.to_string(),
+        data:   Some(MessageData { message: payload }),
+    };
+    if let Ok(message) = serde_json::to_string(&ws_msg) {
+        let ws_list = state.ws_list.lock().await;
+        for (_, (tx, _)) in ws_list.iter() {
+            let _ = tx.send(Message::Text(message.clone()));
+        }
+    }
 }
 
 fn forbidden(role: &Role) -> Option<ApiError> {
@@ -121,8 +144,12 @@ pub async fn set_part_comment(
     if pdt.is_empty() && comment.is_empty() {
         state.graph.run(query("MATCH (c:PartComment {part: $part}) DELETE c").param("part", part.clone()))
             .await.map_err(|e| server_error("Failed to remove the part comment", e))?;
-        return Ok(Json(PartComment { part, ..Default::default() }));
+        let removed = PartComment { part, ..Default::default() };
+        broadcast(state, &removed).await;
+        return Ok(Json(removed));
     }
 
-    Ok(Json(PartComment { part, pdt, comment, updated_by, updated_at }))
+    let saved = PartComment { part, pdt, comment, updated_by, updated_at };
+    broadcast(state, &saved).await;
+    Ok(Json(saved))
 }
