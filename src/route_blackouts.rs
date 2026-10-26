@@ -8,6 +8,9 @@
 //! the day (0, 15, ... 1425) of each window it can't be delivered in. A route
 //! with no node has no restriction.
 //!
+//! A time on a boundary belongs to the window that ends there: 15:00 is the last
+//! minute of 14:45–15:00, so 15:00–15:15 covers 15:01 through 15:15.
+//!
 //! Nodes saved before windows were 15 minutes carry `hours` (0-23) instead; each
 //! reads as all four of that hour's windows until the route is next saved.
 
@@ -53,8 +56,11 @@ pub fn route_key(route: &str) -> String {
     route.trim().to_uppercase()
 }
 
-/// The window an 'HH:MM' delivery time falls in, as its start minute of the day
-/// ("14:37" -> 870, the 14:30 window); None when there's no usable time yet.
+/// The window an 'HH:MM' delivery time falls in, as its start minute of the
+/// day; None when there's no usable time yet. A time right on a boundary is the
+/// last minute of the window ending there: "14:37" is in the 14:30 window (870),
+/// "15:00" in the 14:45 window (885), and "00:00" in the 23:45 window. Seconds,
+/// if any, are ignored.
 pub fn delivery_slot(time: &str) -> Option<i64> {
     let mut parts = time.trim().splitn(2, ':');
     let hour = parts.next()?.trim().parse::<i64>().ok().filter(|h| (0..=23).contains(h))?;
@@ -62,7 +68,9 @@ pub fn delivery_slot(time: &str) -> Option<i64> {
         Some(m) => m.trim().get(..2).unwrap_or(m.trim()).parse::<i64>().ok().filter(|m| (0..=59).contains(m))?,
         None    => 0,
     };
-    Some(hour * 60 + minute / SLOT_MINUTES * SLOT_MINUTES)
+    // Back one minute first so a boundary lands in the window it closes
+    let of_day = (hour * 60 + minute - 1).rem_euclid(24 * 60);
+    Some(of_day / SLOT_MINUTES * SLOT_MINUTES)
 }
 
 async fn read_all(graph: &Graph) -> Result<Vec<RouteBlackout>, neo4rs::Error> {
@@ -195,19 +203,35 @@ mod tests {
     // Same inputs as the frontend's deliverySlot check, so the two sides agree.
     #[test]
     fn delivery_slot_reads_hh_mm() {
-        assert_eq!(delivery_slot("14:30"),   Some(870));
-        assert_eq!(delivery_slot("14:44"),   Some(870));
-        assert_eq!(delivery_slot("14:45"),   Some(885));
-        assert_eq!(delivery_slot("00:15"),   Some(15));
-        assert_eq!(delivery_slot("7:05"),    Some(420));
-        assert_eq!(delivery_slot(" 22:00 "), Some(1320));
-        assert_eq!(delivery_slot("23:59"),   Some(1425));
-        assert_eq!(delivery_slot("14:30:00"), Some(870));
-        assert_eq!(delivery_slot("14"),      Some(840));
-        assert_eq!(delivery_slot(""),        None);
-        assert_eq!(delivery_slot("24:00"),   None);
-        assert_eq!(delivery_slot("14:75"),   None);
-        assert_eq!(delivery_slot("abc"),     None);
+        assert_eq!(delivery_slot("14:31"),    Some(870));   // 14:30 window
+        assert_eq!(delivery_slot("14:44"),    Some(870));
+        assert_eq!(delivery_slot("14:45"),    Some(870));   // closes 14:30–14:45
+        assert_eq!(delivery_slot("14:46"),    Some(885));
+        assert_eq!(delivery_slot("15:00"),    Some(885));   // closes 14:45–15:00
+        assert_eq!(delivery_slot("15:01"),    Some(900));
+        assert_eq!(delivery_slot("7:05"),     Some(420));
+        assert_eq!(delivery_slot(" 22:10 "),  Some(1320));
+        assert_eq!(delivery_slot("23:59"),    Some(1425));
+        assert_eq!(delivery_slot("00:00"),    Some(1425));  // closes 23:45–00:00
+        assert_eq!(delivery_slot("00:01"),    Some(0));
+        assert_eq!(delivery_slot("14:30:00"), Some(855));
+        assert_eq!(delivery_slot("14"),       Some(825));   // 14:00
+        assert_eq!(delivery_slot(""),         None);
+        assert_eq!(delivery_slot("24:00"),    None);
+        assert_eq!(delivery_slot("14:75"),    None);
+        assert_eq!(delivery_slot("abc"),      None);
+    }
+
+    // 14:45–15:00 open, 15:00–15:15 blacked out: 15:00 still goes through
+    #[test]
+    fn boundary_minute_belongs_to_the_closing_window() {
+        let out: HashSet<i64> = [900].into_iter().collect();
+        let blocked = |t: &str| delivery_slot(t).is_some_and(|s| out.contains(&s));
+        assert!(!blocked("14:59"));
+        assert!(!blocked("15:00"));
+        assert!(blocked("15:01"));
+        assert!(blocked("15:15"));
+        assert!(!blocked("15:16"));
     }
 
     #[test]

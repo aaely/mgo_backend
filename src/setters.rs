@@ -7,6 +7,7 @@ use tokio_tungstenite::tungstenite::Message;
 use rocket::{State, delete, post, http::Status, serde::json::Json};
 use neo4rs::{query, Node};
 use crate::route_blackouts::find_blackout;
+use crate::io_feed::{publish_io_refresh, publish_io_removed, publish_io_trailer};
 use std::collections::HashMap;
 
 #[post("/api/update_io", format = "json", data = "<update_io>")]
@@ -245,6 +246,8 @@ pub async fn update_io(
                 let sids: Vec<String>  = row.get("sids").unwrap_or_else(|_| Vec::new());
                 let trailer: String    = row.get("trailer").unwrap_or_default();
 
+                publish_io_trailer(state, &trailer).await;
+
                 Ok(Json(IOResponse {
                     Trailer:  trailer,
                     Schedule: schedule,
@@ -473,6 +476,8 @@ pub async fn update_io_schedule(
         (Status::InternalServerError, Json("Failed to read updated schedule".to_string()))
     })?;
 
+    publish_io_trailer(state, &patch.Trailer).await;
+
     // The whole schedule as saved, so the page can merge it into its row
     Ok(Json(Schedule {
         TrailerID:    s.get("TrailerID").unwrap_or_default(),
@@ -595,6 +600,9 @@ pub async fn upload_in_transit(
         eprintln!("Failed to merge trailer-part relationships: {:?}", e);
         Json("Failed to merge trailer-part relationships")
     })?;
+
+    // Many trailers at once; the IO pages refetch rather than take each
+    publish_io_refresh(state).await;
 
     Ok(Json("In-transit data uploaded and processed successfully"))
 }
@@ -1069,6 +1077,10 @@ pub async fn delivered(
         eprintln!("Failed to delete trailer: {:?}", e);
         Json("Failed to delete trailer")
     })?;
+
+    // Usually a removal; a trailer with no SID parts isn't deleted above and
+    // goes out as an update instead
+    publish_io_trailer(state, &req.trailer_id).await;
 
     Ok(Json(delivered))
 }
@@ -2585,6 +2597,7 @@ pub async fn upload_part_asn(
     }
 
     build_io_from_asn(graph, &data).await?;
+    publish_io_refresh(state).await;
 
     Ok(Json("PartASN uploaded successfully"))
 }
@@ -3509,6 +3522,8 @@ pub async fn delete_io_trailer(
         eprintln!("Failed to clear orphaned parts: {:?}", e);
         Json("Failed to clear orphaned parts")
     })?;
+
+    publish_io_removed(state, &req.trailer).await;
 
     Ok(Json("Trailer deleted"))
 }

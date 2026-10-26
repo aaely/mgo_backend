@@ -288,10 +288,19 @@ pub async fn get_io(
         return Err(Json("Forbidden"));
     }
 
-    let graph = &state.graph;
+    read_io(&state.graph, None).await.map(Json).map_err(|e| {
+        println!("Failed to run query: {:?}", e);
+        Json("Internal Server Error")
+    })
+}
 
+/// IO trailers as the IO pages show them — every one, or just `trailer`. Shared
+/// by get_io and the io topic feed, so a pushed trailer looks exactly like a
+/// fetched one.
+pub async fn read_io(graph: &neo4rs::Graph, trailer: Option<&str>) -> Result<Vec<IOResponse>, neo4rs::Error> {
     let query = query("
         MATCH (t:Trailer)-[:HAS_SCHEDULE]->(s:Schedule)
+        WHERE $trailer IS NULL OR t.id = $trailer
         WITH t, s
         MATCH (t)-[:HAS_SID]->(sid:SID)
         OPTIONAL MATCH (sid)-[:HAS_PART]->(sp:Part)
@@ -302,72 +311,64 @@ pub async fn get_io(
         RETURN t.id AS trailer, s, sids, sidParts,
                COLLECT(DISTINCT p.number) AS parts,
                COLLECT(DISTINCT {part: p.number, quantity: toInteger(coalesce(p.quantity, 0)), scheduleDate: s.ScheduleDate}) AS partQtys
-    ");
+    ").param("trailer", trailer.map(str::to_string));
 
-    match graph.execute(query).await {
-        Ok(mut result) => {
-            let mut data: Vec<IOResponse> = Vec::<IOResponse>::new();
-            while let Ok(Some(record)) = result.next().await {
-                let trailer: String = record.get("trailer").unwrap();
-                let lms_node: Node = record.get("s").unwrap();
-                    let OriginalDate: String = lms_node.get("OriginalDate").unwrap_or_default();
-                    let ScheduleDate: String = lms_node.get("ScheduleDate").unwrap_or_default();
-                    let ScheduleTime: String = lms_node.get("ScheduleTime").unwrap_or_default();
-                    let Comments: String = lms_node.get("Comments").unwrap_or_default();
-                    let Destination: String = lms_node.get("Destination").unwrap_or_default();
-                    let Status: String = lms_node.get("Status").unwrap_or_default();
-                    let Location: String = lms_node.get("Location").unwrap_or_default();
-                    let Scac: String = lms_node.get("Scac").unwrap_or_default();
-                    let Supplier: String = lms_node.get("Supplier").unwrap_or_default();
-                    let CarrierEmail: String = lms_node.get("CarrierEmail").unwrap_or_default();
-                    let ShipDate: String = lms_node.get("ShipDate").unwrap_or_default();
-                    let IsIssue: bool = lms_node.get("IsIssue").unwrap_or_default();
-                let s = Schedule {
-                    TrailerID: trailer.clone(),
-                    OriginalDate,
-                    ScheduleDate,
-                    ScheduleTime,
-                    Comments,
-                    Destination,
-                    Status,
-                    Location,
-                    Supplier,
-                    Scac,
-                    CarrierEmail,
-                    ShipDate,
-                    IsIssue,
-                };
-                let parts = record.get::<Vec<String>>("parts")
-                    .unwrap_or_else(|_| {
-                        println!("Failed to extract parts");
-                        Vec::new()
-                    });
-                let sids = record.get::<Vec<String>>("sids")
-                    .unwrap_or_else(|_| {
-                        println!("Failed to extract parts");
-                        Vec::new()
-                    });
-                // Quantities live on the Part nodes; the running balance needs them
-                let part_qtys = record.get::<Vec<PartQty>>("partQtys").unwrap_or_default();
-                // Pairing of part to SID, which the flat Sids/Parts lists can't carry
-                let sid_parts = record.get::<Vec<SidPart>>("sidParts").unwrap_or_default();
-                let d = IOResponse {
-                    Trailer: trailer,
-                    Schedule: s,
-                    Sids: sids,
-                    Parts: parts,
-                    PartQtys: part_qtys,
-                    SidParts: Some(sid_parts),
-                };
-                data.push(d);
-            }
-            Ok(Json(data))
-        },
-        Err(e) => {
-            println!("Failed to run query: {:?}", e);
-            Err(Json("Internal Server Error"))
-        }
+    let mut result = graph.execute(query).await?;
+    let mut data: Vec<IOResponse> = Vec::<IOResponse>::new();
+    while let Ok(Some(record)) = result.next().await {
+        let trailer: String = record.get("trailer").unwrap();
+        let lms_node: Node = record.get("s").unwrap();
+            let OriginalDate: String = lms_node.get("OriginalDate").unwrap_or_default();
+            let ScheduleDate: String = lms_node.get("ScheduleDate").unwrap_or_default();
+            let ScheduleTime: String = lms_node.get("ScheduleTime").unwrap_or_default();
+            let Comments: String = lms_node.get("Comments").unwrap_or_default();
+            let Destination: String = lms_node.get("Destination").unwrap_or_default();
+            let Status: String = lms_node.get("Status").unwrap_or_default();
+            let Location: String = lms_node.get("Location").unwrap_or_default();
+            let Scac: String = lms_node.get("Scac").unwrap_or_default();
+            let Supplier: String = lms_node.get("Supplier").unwrap_or_default();
+            let CarrierEmail: String = lms_node.get("CarrierEmail").unwrap_or_default();
+            let ShipDate: String = lms_node.get("ShipDate").unwrap_or_default();
+            let IsIssue: bool = lms_node.get("IsIssue").unwrap_or_default();
+        let s = Schedule {
+            TrailerID: trailer.clone(),
+            OriginalDate,
+            ScheduleDate,
+            ScheduleTime,
+            Comments,
+            Destination,
+            Status,
+            Location,
+            Supplier,
+            Scac,
+            CarrierEmail,
+            ShipDate,
+            IsIssue,
+        };
+        let parts = record.get::<Vec<String>>("parts")
+            .unwrap_or_else(|_| {
+                println!("Failed to extract parts");
+                Vec::new()
+            });
+        let sids = record.get::<Vec<String>>("sids")
+            .unwrap_or_else(|_| {
+                println!("Failed to extract parts");
+                Vec::new()
+            });
+        // Quantities live on the Part nodes; the running balance needs them
+        let part_qtys = record.get::<Vec<PartQty>>("partQtys").unwrap_or_default();
+        // Pairing of part to SID, which the flat Sids/Parts lists can't carry
+        let sid_parts = record.get::<Vec<SidPart>>("sidParts").unwrap_or_default();
+        data.push(IOResponse {
+            Trailer: trailer,
+            Schedule: s,
+            Sids: sids,
+            Parts: parts,
+            PartQtys: part_qtys,
+            SidParts: Some(sid_parts),
+        });
     }
+    Ok(data)
 }
 
 #[get("/api/get_exceptions")]

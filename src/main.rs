@@ -16,7 +16,9 @@ mod io_migration;
 mod dock_capacity;
 mod permissions;
 mod route_blackouts;
+mod io_feed;
 mod route_spacing;
+mod part_comments;
 use rocket::data::ToByteUnit;
 use rocket::{get, routes};
 use rocket::fs::{FileServer, NamedFile};
@@ -215,6 +217,8 @@ async fn main() {
             route_blackouts::get_route_blackouts,
             route_blackouts::set_route_blackouts,
             route_spacing::route_deliveries_near,
+            part_comments::get_part_comments,
+            part_comments::set_part_comment,
             // One-time test -> prod IO migration; remove with io_migration.rs
             io_migration::export_io,
             io_migration::import_io,
