@@ -243,10 +243,17 @@ pub async fn complete_login(
     let id_token = exchange_code(code).await?;
     let claims   = validate_id_token(&id_token).await?;
 
+    // The user's email is their identity in the app. Azure only sends `email`
+    // when the account has a mail address, so fall back to the sign-in name
+    // (usually the same address), then the object ID. Lowercased because User
+    // nodes are matched on it exactly and Azure keeps the directory's casing.
     let username = claims
-        .preferred_username
-        .or(claims.email)
-        .unwrap_or(claims.oid);
+        .email
+        .filter(|e| !e.trim().is_empty())
+        .or(claims.preferred_username)
+        .unwrap_or(claims.oid)
+        .trim()
+        .to_lowercase();
 
     let role = role_from_claims(&claims.roles).ok_or(AzureAuthError::NoRoleAssigned)?;
 
