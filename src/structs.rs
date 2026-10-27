@@ -215,6 +215,9 @@ pub struct DeliveredRequest {
     #[serde(default)] pub date2: String,
     /// Partial, case-insensitive trailer match; empty means no trailer filter
     #[serde(default)] pub trailer_id: String,
+    /// Partial, case-insensitive match on any part the trailer delivered; empty
+    /// means no part filter
+    #[serde(default)] pub part: String,
 }
 
 #[derive(Serialize, Deserialize)]

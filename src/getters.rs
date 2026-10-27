@@ -453,6 +453,8 @@ pub async fn get_delivered(
     let mut created_lines = Vec::<Delivered>::new();  // ← mut
 
     let trailer = dates.trailer_id.trim().to_string();
+    let part = dates.part.trim().to_string();
+    let has_range = !dates.date1.is_empty() && !dates.date2.is_empty();
 
     let q = if !trailer.is_empty() {
         // A trailer search ignores the date range and looks across every delivery
@@ -463,8 +465,21 @@ pub async fn get_delivered(
             ORDER BY dt.delivery_date DESC
         ")
         .param("trailer", trailer)
-    } else if dates.date1.is_empty() || dates.date2.is_empty() {
-        return Err(Json("Provide a trailer ID or a date range"));
+    } else if !part.is_empty() {
+        // A part search keeps to the date range when one is given, else every delivery
+        query("
+            MATCH (dt:DeliveredTrailer)
+            WHERE any(p IN coalesce(dt.parts, []) WHERE toUpper(p) CONTAINS toUpper($part))
+              AND (NOT $has_range OR (dt.delivery_date >= $date1 AND dt.delivery_date <= $date2))
+            RETURN dt
+            ORDER BY dt.delivery_date DESC
+        ")
+        .param("part", part)
+        .param("has_range", has_range)
+        .param("date1", dates.date1.clone())
+        .param("date2", dates.date2.clone())
+    } else if !has_range {
+        return Err(Json("Provide a trailer ID, a part number or a date range"));
     } else {
         query("
             MATCH (dt:DeliveredTrailer)
