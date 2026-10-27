@@ -1250,10 +1250,14 @@ pub async fn roll_next_shift(
         CREATE (r:TrailerRecord)
         // 'U' (Not Marked): stat X says it was received, but no one entered an
         // end time — the floor didn't finish marking it, so it's neither a
-        // no-show nor a carryover. Rescheduled trailers keep their 'R'.
+        // no-show nor a carryover. Rescheduled trailers keep their 'R' (or 'Y',
+        // Yellow Card: rescheduled for want of space to offload).
+        // Stat O means it's open and here whatever the times say (the floor
+        // often skips them), so it's archived as worked, never as a no-show.
         SET r = properties(t),
             r.statusOX = CASE
-                WHEN t.statusOX <> 'R' AND t.actualEndTime = '' AND coalesce(t.stat, '') = 'X' THEN 'U'
+                WHEN coalesce(t.stat, '') = 'O' AND NOT coalesce(t.statusOX, '') IN ['R', 'Y', 'D'] THEN t.statusOX
+                WHEN NOT t.statusOX IN ['R', 'Y'] AND t.actualEndTime = '' AND coalesce(t.stat, '') = 'X' THEN 'U'
                 WHEN t.gateArrivalTime = '' AND t.actualEndTime = '' THEN 'N'
                 ELSE t.statusOX
             END
@@ -1266,10 +1270,10 @@ pub async fn roll_next_shift(
         Json("Failed to snapshot live trailers")
     })?;
 
-    // ── Query 2: Push rescheduled (statusOX = 'R') LiveTrailers into RescheduledTrailer ──
+    // ── Query 2: Push rescheduled (statusOX 'R', or 'Y' Yellow Card) LiveTrailers into RescheduledTrailer ──
     let reschedule_query = query("
         MATCH (t:LiveTrailer)
-        WHERE t.statusOX = 'R'
+        WHERE t.statusOX IN ['R', 'Y']
         CREATE (r:RescheduledTrailer)
         SET r = properties(t)
     ");
@@ -1284,13 +1288,16 @@ pub async fn roll_next_shift(
     // isn't pushed to RescheduledTrailer by Query 2.
     // No-shows and not-marked don't roll forward; Query 1 already archived them as
     // statusOX 'N' and 'U'. What survives is exactly the arrived-but-unfinished
-    // carryover set.
+    // carryover set, plus anything left at stat O — open and here, whatever its
+    // times say. Only R, Y and D take a stat-O trailer off the sheet.
     let delete_query = query("
         MATCH (t:LiveTrailer)
-        WHERE t.statusOX IN ['R', 'D']
-           OR (t.gateArrivalTime <> '' AND t.actualEndTime <> '')
-           OR (t.gateArrivalTime = '' AND t.actualEndTime = '')
-           OR (t.actualEndTime = '' AND coalesce(t.stat, '') = 'X')
+        WHERE t.statusOX IN ['R', 'Y', 'D']
+           OR (coalesce(t.stat, '') <> 'O' AND (
+                  (t.gateArrivalTime <> '' AND t.actualEndTime <> '')
+               OR (t.gateArrivalTime = '' AND t.actualEndTime = '')
+               OR (t.actualEndTime = '' AND coalesce(t.stat, '') = 'X')
+           ))
         DELETE t
     ");
 
@@ -1305,7 +1312,7 @@ pub async fn roll_next_shift(
     let status_query = query("
         MATCH (t:LiveTrailer)
         SET t.statusOX = CASE
-            WHEN t.gateArrivalTime <> '' THEN 'C'
+            WHEN t.gateArrivalTime <> '' OR coalesce(t.stat, '') = 'O' THEN 'C'
             ELSE t.statusOX
         END,
         t.dateShift = $next_date_shift
