@@ -165,18 +165,33 @@ pub async fn send_sms(to: &str, body: &str) -> Result<(), Box<dyn std::error::Er
 }
 
 /// Posts `text` to a Slack incoming webhook. `webhook_var` names the env var with
-/// that channel's webhook URL; when it isn't set this falls back to
-/// SLACK_WEBHOOK_URL, so a message doesn't go quiet just because its own channel
-/// hasn't been set up yet. Slack refusing the post (e.g. a revoked webhook) is
-/// an error, not a quiet success.
-pub async fn post_slack_message(webhook_var: &str, text: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let url = std::env::var(webhook_var).or_else(|_| std::env::var("SLACK_WEBHOOK_URL"))?;
+/// that channel's webhook URL; when it isn't set this fails
+pub async fn post_slack_message(
+    webhook_var: &str,
+    text: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let url = std::env::var(webhook_var).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("Slack webhook is not configured: {webhook_var}"),
+        )
+    })?;
+
+    if url.trim().is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("Slack webhook is empty: {webhook_var}"),
+        )
+        .into());
+    }
+
     reqwest::Client::new()
         .post(&url)
         .json(&serde_json::json!({ "text": text }))
         .send()
         .await?
         .error_for_status()?;
+
     Ok(())
 }
 
