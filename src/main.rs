@@ -231,6 +231,7 @@ async fn main() {
             unschedule_io,
             delete_io_trailer,
             delivered,
+            delete_delivered,
             no_show,
             upload_dycomm,
             upload_in_transit,

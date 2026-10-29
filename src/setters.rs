@@ -1085,6 +1085,52 @@ pub async fn delivered(
     Ok(Json(delivered))
 }
 
+/// Removes a delivery that was marked by mistake: the one DeliveredTrailer for
+/// that trailer and date. The active Trailer was already deleted when it was
+/// marked delivered, and the record keeps too little to rebuild it (no SID/part
+/// pairing or quantities). Once the record is gone the trailer is no longer
+/// "recently delivered", so the next GMAP or ASN upload brings it back to IO.
+#[post("/api/delete_delivered", format = "json", data = "<req>")]
+pub async fn delete_delivered(
+    req:   Json<DeliveryRequest>,
+    state: &State<AppState>,
+    user:  AuthenticatedUser,
+    role:  Role,
+) -> Result<Json<&'static str>, (Status, Json<String>)> {
+    if role.0.contains("vaa") || role.0.contains("univ") {
+        return Err((Status::Forbidden, Json("Forbidden".to_string())));
+    }
+    let trailer = req.trailer_id.trim().to_string();
+    let delivery_date = req.delivery_date.trim().to_string();
+    if trailer.is_empty() || delivery_date.is_empty() {
+        return Err((Status::BadRequest, Json("A trailer ID and delivery date are required".to_string())));
+    }
+
+    let mut result = state.graph.execute(query("
+        MATCH (d:DeliveredTrailer {trailer_id: $trailer, delivery_date: $delivery_date})
+        WITH d, count(*) AS n
+        DETACH DELETE d
+        RETURN sum(n) AS removed
+    ")
+    .param("trailer", trailer.clone())
+    .param("delivery_date", delivery_date.clone()))
+    .await.map_err(|e| {
+        eprintln!("Failed to delete delivered record: {:?}", e);
+        (Status::InternalServerError, Json("Failed to delete the delivered record".to_string()))
+    })?;
+
+    let removed: i64 = match result.next().await {
+        Ok(Some(row)) => row.get("removed").unwrap_or(0),
+        _ => 0,
+    };
+    if removed == 0 {
+        return Err((Status::NotFound, Json("That delivered record no longer exists".to_string())));
+    }
+
+    println!("{} removed delivered record {} ({})", user.0.username, trailer, delivery_date);
+    Ok(Json("Delivered record removed"))
+}
+
 /// Mirrors `delivered`, with the one difference that makes it a no-show: the
 /// Trailer, Schedule, SIDs and Parts are left untouched in the active pool, so
 /// the container stays on the IO schedule and can still be rescheduled. All this
