@@ -310,7 +310,9 @@ pub async fn read_io(graph: &neo4rs::Graph, trailer: Option<&str>) -> Result<Vec
         OPTIONAL MATCH (t)-[:CONTAINS_PART]->(p:Part)
         RETURN t.id AS trailer, s, sids, sidParts,
                COLLECT(DISTINCT p.number) AS parts,
-               COLLECT(DISTINCT {part: p.number, quantity: toInteger(coalesce(p.quantity, 0)), scheduleDate: s.ScheduleDate}) AS partQtys
+               // One entry per Part node, i.e. per ASN line: DISTINCT over the maps
+               // would merge two ASNs bringing the same quantity of the same part
+               [x IN COLLECT(DISTINCT p) | {part: x.number, quantity: toInteger(coalesce(x.quantity, 0)), scheduleDate: s.ScheduleDate}] AS partQtys
     ").param("trailer", trailer.map(str::to_string));
 
     let mut result = graph.execute(query).await?;
