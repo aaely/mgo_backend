@@ -20,8 +20,9 @@ pub const ACTIONS: &[(&str, &str, &[&str])] = &[
     ("unload",        "Unload / Empty",                    &["actualStartTime", "actualStartDate", "actualEndTime", "actualEndDate"]),
     ("trailer",       "Set Trailer",                       &["trailer1", "trailer2"]),
     ("status",        "Status OX / Confirm Late / Not Late", &["statusOX"]),
-    // Only Pending Late (P) -> Late (L); checked by confirms_late, not by field
+    // Single status transitions, checked by narrow_status_change, not by field
     ("confirmLate",   "Confirm Late",                      &[]),
+    ("yellowCard",    "Yellow Card",                       &[]),
     // Marking a trailer received (X) stamps when; un-marking clears it
     ("stat",          "Stat toggle",                       &["stat", "receivedDate", "receivedTime"]),
     ("ryderComments", "Ryder Comments",                    &["ryderComments"]),
@@ -49,7 +50,7 @@ fn role_actions(role: &str) -> &'static [&'static str] {
     match role {
         "manager"   => &["trailer", "status", "stat", "ryderComments", "gmComments",
                          "dockComments", "loadComments", "addOn", "rollShift"],
-        "dock"      => &["door", "unload", "confirmLate", "dockComments", "addOn"],
+        "dock"      => &["door", "unload", "confirmLate", "yellowCard", "dockComments", "addOn"],
         "mfu"       => &["trailer", "ryderComments", "loadComments"],
         "security"  => &["gate", "gmComments"],
         "receiving" => &["gate", "trailer", "stat", "ryderComments", "loadComments"],
@@ -107,15 +108,19 @@ pub fn denied(role: &str, changed: &HashSet<&str>) -> Vec<&'static str> {
     labels
 }
 
-/// Confirm Late: a Pending Late (P) trailer that hasn't shown up is marked Late
-/// (L). A role with confirmLate may make exactly that change, and nothing else,
-/// without holding status.
-pub fn confirms_late(role: &str, changed: &HashSet<&str>, old_status: &str, new_status: &str) -> bool {
-    can(role, "confirmLate")
-        && changed.len() == 1
-        && changed.contains("statusOX")
-        && old_status.trim() == "P"
-        && new_status.trim() == "L"
+/// Status changes a role may make without holding status, each one transition
+/// with nothing else edited alongside it:
+/// - confirmLate: a Pending Late (P) trailer that hasn't shown up -> Late (L)
+/// - yellowCard: a trailer on site (stored stat O) with no space to offload -> Yellow Card (Y)
+pub fn narrow_status_change(role: &str, changed: &HashSet<&str>, old_status: &str, new_status: &str, stat: &str) -> bool {
+    if changed.len() != 1 || !changed.contains("statusOX") {
+        return false;
+    }
+    match new_status.trim() {
+        "L" => can(role, "confirmLate") && old_status.trim() == "P",
+        "Y" => can(role, "yellowCard") && stat.trim() == "O",
+        _ => false,
+    }
 }
 
 #[derive(Serialize)]
@@ -171,17 +176,23 @@ mod tests {
     }
 
     #[test]
-    fn dock_may_only_confirm_late() {
+    fn dock_may_only_confirm_late_or_yellow_card() {
         let status = set(&["statusOX"]);
-        assert!(confirms_late("dock", &status, "P", "L"));
+        assert!(narrow_status_change("dock", &status, "P", "L", ""));
+        // Yellow Card only once the trailer is on site (stat O)
+        assert!(narrow_status_change("dock", &status, "O", "Y", "O"));
+        assert!(!narrow_status_change("dock", &status, "O", "Y", ""));
+        assert!(!narrow_status_change("dock", &status, "O", "Y", "X"));
         // Any other status change is still refused
-        assert!(!confirms_late("dock", &status, "P", "O"));
-        assert!(!confirms_late("dock", &status, "O", "L"));
+        assert!(!narrow_status_change("dock", &status, "P", "O", "O"));
+        assert!(!narrow_status_change("dock", &status, "O", "L", "O"));
         assert!(!denied("dock", &status).is_empty());
         // ...as is anything riding along with it
-        assert!(!confirms_late("dock", &set(&["statusOX", "gateArrivalTime"]), "P", "L"));
-        // Roles without the action don't get it
-        assert!(!confirms_late("security", &status, "P", "L"));
+        assert!(!narrow_status_change("dock", &set(&["statusOX", "gateArrivalTime"]), "P", "L", ""));
+        assert!(!narrow_status_change("dock", &set(&["statusOX", "stat"]), "O", "Y", "O"));
+        // Roles without the actions don't get them
+        assert!(!narrow_status_change("security", &status, "P", "L", ""));
+        assert!(!narrow_status_change("security", &status, "O", "Y", "O"));
     }
 
     #[test]

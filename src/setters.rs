@@ -2096,7 +2096,9 @@ pub async fn update_live_trailer(
         .collect();
     let changed_set: HashSet<&str> = changed.iter().copied().collect();
     let old_status = old_values.get("statusOX").cloned().unwrap_or_default();
-    let denied = if permissions::confirms_late(&role.0, &changed_set, &old_status, &trailer.statusOX) {
+    // Stat as stored, not as the request carries it
+    let old_stat = old_values.get("stat").cloned().unwrap_or_default();
+    let denied = if permissions::narrow_status_change(&role.0, &changed_set, &old_status, &trailer.statusOX, &old_stat) {
         vec![]
     } else {
         permissions::denied(&role.0, &changed_set)
