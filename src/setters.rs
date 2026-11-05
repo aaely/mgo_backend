@@ -8,7 +8,7 @@ use rocket::{State, delete, post, http::Status, serde::json::Json};
 use neo4rs::{query, Node};
 use crate::route_blackouts::find_blackout;
 use crate::io_feed::{publish_io_refresh, publish_io_removed, publish_io_trailer};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[post("/api/update_io", format = "json", data = "<update_io>")]
 pub async fn update_io(
@@ -2094,7 +2094,13 @@ pub async fn update_live_trailer(
         .filter(|f| changed_fields.is_empty() || changed_fields.iter().any(|c| c == f))
         .filter(|f| trailer_field(&trailer, f) != old_values.get(f).cloned().unwrap_or_default())
         .collect();
-    let denied = permissions::denied(&role.0, &changed.iter().copied().collect());
+    let changed_set: HashSet<&str> = changed.iter().copied().collect();
+    let old_status = old_values.get("statusOX").cloned().unwrap_or_default();
+    let denied = if permissions::confirms_late(&role.0, &changed_set, &old_status, &trailer.statusOX) {
+        vec![]
+    } else {
+        permissions::denied(&role.0, &changed_set)
+    };
     if !denied.is_empty() {
         return Err((Status::Forbidden, Json(format!("Your role ({}) can't change: {}", role.0, denied.join(", ")))));
     }

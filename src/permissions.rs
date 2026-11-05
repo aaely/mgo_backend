@@ -20,6 +20,8 @@ pub const ACTIONS: &[(&str, &str, &[&str])] = &[
     ("unload",        "Unload / Empty",                    &["actualStartTime", "actualStartDate", "actualEndTime", "actualEndDate"]),
     ("trailer",       "Set Trailer",                       &["trailer1", "trailer2"]),
     ("status",        "Status OX / Confirm Late / Not Late", &["statusOX"]),
+    // Only Pending Late (P) -> Late (L); checked by confirms_late, not by field
+    ("confirmLate",   "Confirm Late",                      &[]),
     // Marking a trailer received (X) stamps when; un-marking clears it
     ("stat",          "Stat toggle",                       &["stat", "receivedDate", "receivedTime"]),
     ("ryderComments", "Ryder Comments",                    &["ryderComments"]),
@@ -47,7 +49,7 @@ fn role_actions(role: &str) -> &'static [&'static str] {
     match role {
         "manager"   => &["trailer", "status", "stat", "ryderComments", "gmComments",
                          "dockComments", "loadComments", "addOn", "rollShift"],
-        "dock"      => &["door", "unload", "dockComments", "addOn"],
+        "dock"      => &["door", "unload", "confirmLate", "dockComments", "addOn"],
         "mfu"       => &["trailer", "ryderComments", "loadComments"],
         "security"  => &["gate", "gmComments"],
         "receiving" => &["gate", "trailer", "stat", "ryderComments", "loadComments"],
@@ -105,6 +107,17 @@ pub fn denied(role: &str, changed: &HashSet<&str>) -> Vec<&'static str> {
     labels
 }
 
+/// Confirm Late: a Pending Late (P) trailer that hasn't shown up is marked Late
+/// (L). A role with confirmLate may make exactly that change, and nothing else,
+/// without holding status.
+pub fn confirms_late(role: &str, changed: &HashSet<&str>, old_status: &str, new_status: &str) -> bool {
+    can(role, "confirmLate")
+        && changed.len() == 1
+        && changed.contains("statusOX")
+        && old_status.trim() == "P"
+        && new_status.trim() == "L"
+}
+
 #[derive(Serialize)]
 pub struct MyPermissions {
     pub role:    String,
@@ -155,6 +168,20 @@ mod tests {
         assert!(denied("manager", &set(&["statusOX", "gateArrivalTime"])).is_empty());
         // ...but can't record an arrival on its own
         assert_eq!(denied("manager", &set(&["gateArrivalTime"])), vec!["Arrived (gate)"]);
+    }
+
+    #[test]
+    fn dock_may_only_confirm_late() {
+        let status = set(&["statusOX"]);
+        assert!(confirms_late("dock", &status, "P", "L"));
+        // Any other status change is still refused
+        assert!(!confirms_late("dock", &status, "P", "O"));
+        assert!(!confirms_late("dock", &status, "O", "L"));
+        assert!(!denied("dock", &status).is_empty());
+        // ...as is anything riding along with it
+        assert!(!confirms_late("dock", &set(&["statusOX", "gateArrivalTime"]), "P", "L"));
+        // Roles without the action don't get it
+        assert!(!confirms_late("security", &status, "P", "L"));
     }
 
     #[test]
