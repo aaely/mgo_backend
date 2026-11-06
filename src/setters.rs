@@ -800,6 +800,120 @@ pub async fn upload_exception(
     Ok(Json(created_lines))
 }
 
+/// An Exception Log entry's key: upload_exception merges on these three.
+#[derive(serde::Deserialize)]
+pub struct ExceptionKey {
+    pub loadNum:  String,
+    pub dock:     String,
+    pub trailer1: String,
+}
+
+/// Removes one Exception Log entry. Managers and admins only (the guard refuses
+/// anyone else with 403). Leaves an audit event naming who deleted which load.
+#[delete("/api/delete_exception", format = "json", data = "<key>")]
+pub async fn delete_exception(
+    key:   Json<ExceptionKey>,
+    state: &State<AppState>,
+    user:  AdminOrManager,
+) -> Result<Json<&'static str>, (Status, Json<String>)> {
+    let graph = &state.graph;
+
+    let q = query("
+        MATCH (e:ExceptionLogEntry {loadNum: $loadNum, dock: $dock, trailer1: $trailer1})
+        DETACH DELETE e
+        RETURN count(*) AS deleted
+    ")
+    .param("loadNum",  key.loadNum.clone())
+    .param("dock",     key.dock.clone())
+    .param("trailer1", key.trailer1.clone());
+
+    let deleted = match graph.execute(q).await {
+        Ok(mut result) => match result.next().await {
+            Ok(Some(row)) => row.get::<i64>("deleted").unwrap_or(0),
+            _ => 0,
+        },
+        Err(e) => {
+            eprintln!("Failed to delete exception log entry: {:?}", e);
+            return Err((Status::InternalServerError, Json("Failed to delete the entry".to_string())));
+        }
+    };
+    if deleted == 0 {
+        return Err((Status::NotFound, Json("That entry was already deleted. Reload the page.".to_string())));
+    }
+
+    audit_log_delete(graph, "exception_deleted", &key.loadNum, &key.dock, &key.trailer1, &user.0.username).await;
+    Ok(Json("Deleted"))
+}
+
+/// Audit event for a deleted Exception or DyComm Log entry: which load, and who.
+async fn audit_log_delete(graph: &neo4rs::Graph, field: &str, load_num: &str, dock: &str, trailer: &str, by: &str) {
+    let aq = query("
+        MERGE (o:OpDate {date: $op_date})
+        CREATE (a:AuditEvent {
+            trailer_uuid: '',
+            field:        $field,
+            old_value:    $old_value,
+            new_value:    '',
+            timestamp:    $timestamp,
+            updated_by:   $updated_by
+        })
+        CREATE (o)-[:HAS_AUDIT]->(a)
+    ")
+    .param("op_date",    chrono::Utc::now().format("%Y-%m-%d").to_string())
+    .param("field",      field.to_string())
+    .param("old_value",  format!("{load_num} (dock {dock}, trailer {trailer})"))
+    .param("timestamp",  chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string())
+    .param("updated_by", by.to_string());
+    if let Err(e) = graph.run(aq).await {
+        eprintln!("Failed to write {field} audit event: {:?}", e);
+    }
+}
+
+/// A DY Communication Log entry's key: upload_dycomm merges on these three.
+#[derive(serde::Deserialize)]
+pub struct DyCommKey {
+    pub loadNum: String,
+    pub dock:    String,
+    pub trailer: String,
+}
+
+/// Removes one DY Communication Log entry. Managers and admins only (the guard
+/// refuses anyone else with 403). Leaves an audit event naming who deleted which load.
+#[delete("/api/delete_dycomm", format = "json", data = "<key>")]
+pub async fn delete_dycomm(
+    key:   Json<DyCommKey>,
+    state: &State<AppState>,
+    user:  AdminOrManager,
+) -> Result<Json<&'static str>, (Status, Json<String>)> {
+    let graph = &state.graph;
+
+    let q = query("
+        MATCH (d:DyCommLogEntry {loadNum: $loadNum, dock: $dock, trailer: $trailer})
+        DETACH DELETE d
+        RETURN count(*) AS deleted
+    ")
+    .param("loadNum", key.loadNum.clone())
+    .param("dock",    key.dock.clone())
+    .param("trailer", key.trailer.clone());
+
+    let deleted = match graph.execute(q).await {
+        Ok(mut result) => match result.next().await {
+            Ok(Some(row)) => row.get::<i64>("deleted").unwrap_or(0),
+            _ => 0,
+        },
+        Err(e) => {
+            eprintln!("Failed to delete dycomm log entry: {:?}", e);
+            return Err((Status::InternalServerError, Json("Failed to delete the entry".to_string())));
+        }
+    };
+    if deleted == 0 {
+        return Err((Status::NotFound, Json("That entry was already deleted. Reload the page.".to_string())));
+    }
+
+    audit_log_delete(graph, "dycomm_deleted", &key.loadNum, &key.dock, &key.trailer, &user.0.username).await;
+    Ok(Json("Deleted"))
+}
+
 #[post("/api/upload_dycomm", format = "json", data = "<upload_dycomm>")]
 pub async fn upload_dycomm(
     upload_dycomm: Json<Vec<DyCommLogEntry>>,

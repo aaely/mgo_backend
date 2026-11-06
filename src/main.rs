@@ -228,6 +228,8 @@ async fn main() {
             get_route_delivering,
             get_exceptions,
             upload_exception,
+            delete_exception,
+            delete_dycomm,
             unschedule_io,
             delete_io_trailer,
             delivered,
