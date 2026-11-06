@@ -8,10 +8,19 @@
 //! - `io_refresh` — no payload; a bulk upload changed many trailers, so refetch
 //!   get_io.
 //!
+//! The Exception Log and DY Communication Log ride this topic too (IO scheduling
+//! files exception entries, and get_exceptions / get_dy refuse the same roles):
+//! - `exception_update` / `dycomm_update`   — one entry as get_exceptions / get_dy
+//!   return it, after it was saved. Replaces the entry with the same key, or adds it.
+//! - `exception_removed` / `dycomm_removed` — the entry's key, after it was deleted
+//!   or archived: {loadNum, dock, trailer1} / {loadNum, dock, trailer}.
+//! - `exception_refresh` / `dycomm_refresh` — no payload; refetch the log. Sent
+//!   for imports, and for changes matched without the full key.
+//!
 //! Only subscribers get them, and never the vaa/univ roles, which get_io refuses.
 
 use crate::getters::read_io;
-use crate::structs::{AppState, IncomingMessage, MessageData};
+use crate::structs::{AppState, DyCommLogEntry, ExceptionLogEntry, IncomingMessage, MessageData};
 use tokio_tungstenite::tungstenite::Message;
 
 pub const TOPIC_IO: &str = "io";
@@ -19,6 +28,22 @@ pub const TOPIC_IO: &str = "io";
 pub const WS_IO_UPDATE:  &str = "io_update";
 pub const WS_IO_REMOVED: &str = "io_removed";
 pub const WS_IO_REFRESH: &str = "io_refresh";
+
+pub const WS_EXCEPTION_UPDATE:  &str = "exception_update";
+pub const WS_EXCEPTION_REMOVED: &str = "exception_removed";
+pub const WS_EXCEPTION_REFRESH: &str = "exception_refresh";
+
+pub const WS_DYCOMM_UPDATE:  &str = "dycomm_update";
+pub const WS_DYCOMM_REMOVED: &str = "dycomm_removed";
+pub const WS_DYCOMM_REFRESH: &str = "dycomm_refresh";
+
+/// Every message type this feed sends. wsserver drops these when a client sends
+/// one, so nobody can repaint the IO pages or logs with made-up rows.
+pub const WS_IO_FEED_TYPES: &[&str] = &[
+    WS_IO_UPDATE, WS_IO_REMOVED, WS_IO_REFRESH,
+    WS_EXCEPTION_UPDATE, WS_EXCEPTION_REMOVED, WS_EXCEPTION_REFRESH,
+    WS_DYCOMM_UPDATE, WS_DYCOMM_REMOVED, WS_DYCOMM_REFRESH,
+];
 
 /// Sends `message_type` to every subscriber of the io topic whose role may see IO.
 async fn send(state: &AppState, message_type: &str, payload: Option<String>) {
@@ -60,4 +85,38 @@ pub async fn publish_io_removed(state: &AppState, trailer: &str) {
 
 pub async fn publish_io_refresh(state: &AppState) {
     send(state, WS_IO_REFRESH, None).await;
+}
+
+// ── Exception Log ──
+
+pub async fn publish_exception_entry(state: &AppState, entry: &ExceptionLogEntry) {
+    if let Ok(json) = serde_json::to_string(entry) {
+        send(state, WS_EXCEPTION_UPDATE, Some(json)).await;
+    }
+}
+
+pub async fn publish_exception_removed(state: &AppState, load_num: &str, dock: &str, trailer1: &str) {
+    let key = serde_json::json!({ "loadNum": load_num, "dock": dock, "trailer1": trailer1 });
+    send(state, WS_EXCEPTION_REMOVED, Some(key.to_string())).await;
+}
+
+pub async fn publish_exception_refresh(state: &AppState) {
+    send(state, WS_EXCEPTION_REFRESH, None).await;
+}
+
+// ── DY Communication Log ──
+
+pub async fn publish_dycomm_entry(state: &AppState, entry: &DyCommLogEntry) {
+    if let Ok(json) = serde_json::to_string(entry) {
+        send(state, WS_DYCOMM_UPDATE, Some(json)).await;
+    }
+}
+
+pub async fn publish_dycomm_removed(state: &AppState, load_num: &str, dock: &str, trailer: &str) {
+    let key = serde_json::json!({ "loadNum": load_num, "dock": dock, "trailer": trailer });
+    send(state, WS_DYCOMM_REMOVED, Some(key.to_string())).await;
+}
+
+pub async fn publish_dycomm_refresh(state: &AppState) {
+    send(state, WS_DYCOMM_REFRESH, None).await;
 }

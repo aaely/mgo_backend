@@ -32,6 +32,7 @@
 //! exceptionSheet.ts, dySheet.ts, contactFile.ts.
 
 use crate::auth::AdminOnly;
+use crate::io_feed::{publish_dycomm_refresh, publish_exception_refresh};
 use crate::structs::{AppState, Contact, DyCommLogEntry, ExceptionLogEntry};
 use neo4rs::{query, Node, Txn};
 use rocket::{get, http::Status, post, serde::json::Json, State};
@@ -644,6 +645,7 @@ pub async fn import_dy_sheet(
         Ok(counts) => {
             txn.commit().await.map_err(|e| server_error("Failed to commit DY sheet import", e))?;
             println!("import_dy_sheet committed: {counts:?}");
+            publish_dycomm_refresh(state).await;
             Ok(Json(counts))
         }
         Err(msg) => {
@@ -694,6 +696,7 @@ pub async fn import_exception_sheet(
         Ok(counts) => {
             txn.commit().await.map_err(|e| server_error("Failed to commit sheet import", e))?;
             println!("import_exception_sheet committed: {counts:?}");
+            publish_exception_refresh(state).await;
             Ok(Json(counts))
         }
         Err(msg) => {
@@ -786,6 +789,7 @@ pub async fn import_io(
         Ok(counts) => {
             txn.commit().await.map_err(|e| server_error("Failed to commit import", e))?;
             println!("import_io committed: {counts:?}");
+            publish_exception_refresh(state).await;
             Ok(Json(counts))
         }
         Err(msg) => {

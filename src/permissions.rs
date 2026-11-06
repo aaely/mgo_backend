@@ -53,7 +53,7 @@ fn role_actions(role: &str) -> &'static [&'static str] {
         "dock"      => &["door", "unload", "confirmLate", "yellowCard", "dockComments", "addOn"],
         "mfu"       => &["trailer", "ryderComments", "loadComments"],
         "security"  => &["gate", "gmComments"],
-        "receiving" => &["gate", "trailer", "stat", "ryderComments", "loadComments"],
+        "receiving" => &["gate", "unload", "trailer", "stat", "ryderComments", "loadComments"],
         // Limited to their own dock by update_live_trailer and the add-on routes
         "vaa" | "univ" => &["gate", "door", "unload", "status", "stat",
                             "gmComments", "dockComments", "addOn"],
@@ -157,6 +157,11 @@ mod tests {
         assert!(can("dock", "unload") && !can("dock", "gate"));
         assert!(can("security", "gate") && can("security", "gmComments") && !can("security", "status"));
         assert!(can("receiving", "trailer") && !can("receiving", "status"));
+        // Receiving stamps and back-fills gate arrival and dock start/end
+        assert!(can("receiving", "gate") && can("receiving", "unload"));
+        assert!(denied("receiving", &set(&["actualStartTime", "actualStartDate"])).is_empty());
+        assert!(denied("receiving", &set(&["actualEndTime", "actualEndDate"])).is_empty());
+        assert!(denied("receiving", &set(&["gateArrivalTime", "gateArrivalDate", "statusOX"])).is_empty());
         assert!(can("vaa", "addOn") && !can("vaa", "trailer"));
         for r in ["supervisor", "floater", "read", ""] {
             assert!(ACTIONS.iter().all(|(a, _, _)| !can(r, a)), "{r} should be view-only");

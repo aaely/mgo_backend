@@ -7,7 +7,10 @@ use tokio_tungstenite::tungstenite::Message;
 use rocket::{State, delete, post, http::Status, serde::json::Json};
 use neo4rs::{query, Node};
 use crate::route_blackouts::find_blackout;
-use crate::io_feed::{publish_io_refresh, publish_io_removed, publish_io_trailer};
+use crate::io_feed::{
+    publish_dycomm_entry, publish_dycomm_removed, publish_exception_entry, publish_exception_refresh,
+    publish_exception_removed, publish_io_refresh, publish_io_removed, publish_io_trailer,
+};
 use std::collections::{HashMap, HashSet};
 
 #[post("/api/update_io", format = "json", data = "<update_io>")]
@@ -74,6 +77,8 @@ pub async fn update_io(
             eprintln!("Failed to rename IO exception entry: {:?}", e);
             Json("Failed to rename IO exception entry")
         })?;
+        // Matched by trailer alone, so the old key isn't known here
+        publish_exception_refresh(state).await;
     }
 
     // ── Query 2a: Remove stale Part relationships ──
@@ -797,6 +802,9 @@ pub async fn upload_exception(
         }
     }
 
+    for entry in &created_lines {
+        publish_exception_entry(state, entry).await;
+    }
     Ok(Json(created_lines))
 }
 
@@ -842,6 +850,7 @@ pub async fn delete_exception(
     }
 
     audit_log_delete(graph, "exception_deleted", &key.loadNum, &key.dock, &key.trailer1, &user.0.username).await;
+    publish_exception_removed(state, &key.loadNum, &key.dock, &key.trailer1).await;
     Ok(Json("Deleted"))
 }
 
@@ -911,6 +920,7 @@ pub async fn delete_dycomm(
     }
 
     audit_log_delete(graph, "dycomm_deleted", &key.loadNum, &key.dock, &key.trailer, &user.0.username).await;
+    publish_dycomm_removed(state, &key.loadNum, &key.dock, &key.trailer).await;
     Ok(Json("Deleted"))
 }
 
@@ -1060,6 +1070,9 @@ pub async fn upload_dycomm(
         }
     }
 
+    for entry in &created_lines {
+        publish_dycomm_entry(state, entry).await;
+    }
     Ok(Json(created_lines))
 }
 
@@ -2104,8 +2117,9 @@ pub async fn upload_on_deck(
             .param("dock",    line.dockCode.clone())
             .param("trailer", line.trailer1.clone());
 
-            if let Err(e) = graph.run(archive_q).await {
-                eprintln!("Failed to archive DyComm entry ({}/{}/{}): {:?}", line.lmsAccent, line.dockCode, line.trailer1, e);
+            match graph.run(archive_q).await {
+                Ok(()) => publish_dycomm_removed(state, &line.lmsAccent, &line.dockCode, &line.trailer1).await,
+                Err(e) => eprintln!("Failed to archive DyComm entry ({}/{}/{}): {:?}", line.lmsAccent, line.dockCode, line.trailer1, e),
             }
         } else if line.origin == "Exception" {
             let archive_q = query("
@@ -2138,8 +2152,9 @@ pub async fn upload_on_deck(
             .param("dock",     line.dockCode.clone())
             .param("trailer1", line.trailer1.clone());
 
-            if let Err(e) = graph.run(archive_q).await {
-                eprintln!("Failed to archive Exception entry ({}/{}/{}): {:?}", line.lmsAccent, line.dockCode, line.trailer1, e);
+            match graph.run(archive_q).await {
+                Ok(()) => publish_exception_removed(state, &line.lmsAccent, &line.dockCode, &line.trailer1).await,
+                Err(e) => eprintln!("Failed to archive Exception entry ({}/{}/{}): {:?}", line.lmsAccent, line.dockCode, line.trailer1, e),
             }
         }
     }
@@ -3637,6 +3652,8 @@ pub async fn unschedule_io(
         eprintln!("Failed to retire exception entry for {}: {:?}", req.trailer, e);
         Json("Failed to retire exception entry")
     })?;
+    // Matched without the dock, so the key isn't known here
+    publish_exception_refresh(state).await;
 
     Ok(Json("Exception entry retired"))
 }
