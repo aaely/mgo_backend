@@ -282,7 +282,7 @@ pub fn get_event_type(field: &str) -> &'static str {
 /// IO builders skip these rather than rebuild them. delivery_date is stored as
 /// YYYY-MM-DD, so it compares correctly as text.
 pub async fn recently_delivered(graph: &neo4rs::Graph) -> (std::collections::HashSet<String>, String) {
-    let cutoff = (Utc::now() - Duration::days(30))
+    let cutoff = (Utc::now() - Duration::days(5))
         .format("%Y-%m-%d")
         .to_string();
 
