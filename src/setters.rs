@@ -115,18 +115,40 @@ pub async fn update_io(
         Json("Failed to add parts")
     })?;
 
-    // ── Query 3a: Remove stale SID relationships ──
-    let remove_sids_query = query("
-        MATCH (t:Trailer {id: $trailer})-[r:HAS_SID]->(sid:SID)
+    // ── Query 3a: Remove SIDs taken off the trailer ──
+    // Unlinking alone left the SID's part lines hanging off it, and they still
+    // counted in the trailer's PartQtys while CONTAINS_PART survived. A SID no
+    // other trailer carries is deleted along with its parts. A SID another
+    // trailer still carries only loses this trailer's links, so the other
+    // trailer keeps its lines.
+    let delete_sids_query = query("
+        MATCH (t:Trailer {id: $trailer})-[:HAS_SID]->(sid:SID)
         WHERE NOT sid.id IN $sids
-        DELETE r
+          AND NOT EXISTS { MATCH (o:Trailer)-[:HAS_SID]->(sid) WHERE o <> t }
+        OPTIONAL MATCH (sid)-[:HAS_PART]->(p:Part)
+        DETACH DELETE p, sid
     ")
     .param("trailer", update_io.Schedule.TrailerID.clone())
     .param("sids",    update_io.Sids.clone());
 
-    graph.run(remove_sids_query).await.map_err(|e| {
-        eprintln!("Failed to remove stale sids: {:?}", e);
-        Json("Failed to remove stale sids")
+    graph.run(delete_sids_query).await.map_err(|e| {
+        eprintln!("Failed to delete removed sids: {:?}", e);
+        Json("Failed to delete removed sids")
+    })?;
+
+    let unlink_sids_query = query("
+        MATCH (t:Trailer {id: $trailer})-[r:HAS_SID]->(sid:SID)
+        WHERE NOT sid.id IN $sids
+        OPTIONAL MATCH (sid)-[b:BELONGS_TO]->(t)
+        OPTIONAL MATCH (t)-[c:CONTAINS_PART]->(:Part)<-[:HAS_PART]-(sid)
+        DELETE r, b, c
+    ")
+    .param("trailer", update_io.Schedule.TrailerID.clone())
+    .param("sids",    update_io.Sids.clone());
+
+    graph.run(unlink_sids_query).await.map_err(|e| {
+        eprintln!("Failed to unlink shared sids: {:?}", e);
+        Json("Failed to unlink shared sids")
     })?;
 
     // ── Query 3b: Merge new SID relationships ──
@@ -146,71 +168,149 @@ pub async fn update_io(
 
     // ── Query 3c/3d/3e: Reconcile which part hangs off which SID ──
     // Only when the caller sent the field — see IOResponse::SidParts
+    //
+    // A :Part is one SID's shipment line — every writer MERGEs it through
+    // (sid)-[:HAS_PART]->, so it belongs to exactly one SID. The form's lines are
+    // diffed against the SIDs' current lines and the nodes edited in place:
+    // unchanged lines are left alone, a changed quantity is SET on the existing
+    // node, only genuinely new lines are created, and removed lines are deleted
+    // outright. Deleting the HAS_PART edge and MERGE-ing a replacement (the old
+    // approach) made a fresh node on every save and stranded the old one, which
+    // kept its CONTAINS_PART from the trailer and so escaped every sweep.
     if let Some(sid_parts) = update_io.SidParts.as_ref() {
-        // Sent as parallel arrays rather than a list of maps: neo4rs 0.7 params take
-        // primitives and lists of primitives, so the rows are zipped back by index.
-        let sp_sids: Vec<String> = sid_parts.iter().map(|r| r.sid.clone()).collect();
-        let sp_parts: Vec<String> = sid_parts.iter().map(|r| r.part.clone()).collect();
-        let sp_qtys: Vec<i64> = sid_parts.iter().map(|r| r.quantity).collect();
-        // Keys let the sweep below spot a pairing that was removed in the form
-        let sp_keys: Vec<String> = sid_parts.iter()
-            .map(|r| format!("{}|{}", r.sid, r.part))
-            .collect();
+        let trailer_id = update_io.Schedule.TrailerID.clone();
 
-        // Drop pairings the operator removed
-        let remove_sid_parts = query("
-            MATCH (t:Trailer {id: $trailer})-[:HAS_SID]->(sid:SID)-[r:HAS_PART]->(p:Part)
-            WHERE NOT (sid.id + '|' + p.number) IN $keys
-            DELETE r
+        // ── Current lines on this trailer's SIDs ──
+        let mut current = graph.execute(query("
+            MATCH (t:Trailer {id: $trailer})-[:HAS_SID]->(sid:SID)-[:HAS_PART]->(p:Part)
+            RETURN DISTINCT sid.id AS sid, p.number AS part,
+                   toInteger(coalesce(p.quantity, 0)) AS qty, elementId(p) AS node
         ")
-        .param("trailer", update_io.Schedule.TrailerID.clone())
-        .param("keys",    sp_keys.clone());
-
-        graph.run(remove_sid_parts).await.map_err(|e| {
-            eprintln!("Failed to remove stale sid/part links: {:?}", e);
-            Json("Failed to remove stale sid/part links")
+        .param("trailer", trailer_id.clone()))
+        .await
+        .map_err(|e| {
+            eprintln!("Failed to read sid/part lines: {:?}", e);
+            Json("Failed to read sid/part lines")
         })?;
 
-        // Attach each part to its SID at the requested quantity.
-        // :Part nodes are merged on {number, quantity, duns}, so quantity is part of
-        // the node's identity — SET-ing it would silently rewrite the quantity for
-        // every other trailer sharing that node. Instead the edge is re-pointed at
-        // the node carrying the wanted quantity, keeping duns from the old line.
-        let upsert_sid_parts = query("
-            MATCH (t:Trailer {id: $trailer})
-            UNWIND range(0, size($sids) - 1) AS i
-            WITH t, $sids[i] AS sidId, $parts[i] AS partNum, $qtys[i] AS qty
-            MATCH (t)-[:HAS_SID]->(sid:SID {id: sidId})
-            OPTIONAL MATCH (sid)-[r:HAS_PART]->(old:Part {number: partNum})
-            WITH t, sid, partNum, qty, r, coalesce(old.duns, '') AS duns
-            DELETE r
-            MERGE (sid)-[:HAS_PART]->(p:Part {number: partNum, quantity: toInteger(qty), duns: duns})
+        let mut existing: HashMap<(String, String), Vec<(i64, String)>> = HashMap::new();
+        while let Some(row) = current.next().await.map_err(|e| {
+            eprintln!("Failed to read sid/part lines: {:?}", e);
+            Json("Failed to read sid/part lines")
+        })? {
+            let sid: String = row.get("sid").unwrap_or_default();
+            let part: String = row.get("part").unwrap_or_default();
+            let qty: i64 = row.get("qty").unwrap_or_default();
+            let node: String = row.get("node").unwrap_or_default();
+            existing.entry((sid, part)).or_default().push((qty, node));
+        }
+
+        // ── Diff per (sid, part). A part can ride a SID on more than one line,
+        //    so quantities are matched as a multiset: equal quantities pair off
+        //    untouched, leftover wanted quantities reuse leftover nodes, and
+        //    whatever remains on either side is created or deleted. ──
+        let mut wanted: HashMap<(String, String), Vec<i64>> = HashMap::new();
+        for r in sid_parts {
+            wanted.entry((r.sid.clone(), r.part.clone())).or_default().push(r.quantity);
+        }
+
+        let mut set_nodes: Vec<String> = Vec::new();
+        let mut set_qtys: Vec<i64> = Vec::new();
+        let mut new_sids: Vec<String> = Vec::new();
+        let mut new_parts: Vec<String> = Vec::new();
+        let mut new_qtys: Vec<i64> = Vec::new();
+        let mut delete_nodes: Vec<String> = Vec::new();
+
+        for (key, wants) in wanted.iter() {
+            let mut have = existing.remove(key).unwrap_or_default();
+            let mut unmatched: Vec<i64> = Vec::new();
+            for &q in wants {
+                match have.iter().position(|(hq, _)| *hq == q) {
+                    Some(pos) => { have.remove(pos); }
+                    None => unmatched.push(q),
+                }
+            }
+            for q in unmatched {
+                match have.pop() {
+                    Some((_, node)) => { set_nodes.push(node); set_qtys.push(q); }
+                    None => { new_sids.push(key.0.clone()); new_parts.push(key.1.clone()); new_qtys.push(q); }
+                }
+            }
+            delete_nodes.extend(have.into_iter().map(|(_, node)| node));
+        }
+        // Pairings no longer on the form at all
+        delete_nodes.extend(existing.into_values().flatten().map(|(_, node)| node));
+
+        // ── Removed lines go entirely, so nothing is left dangling ──
+        if !delete_nodes.is_empty() {
+            graph.run(query("
+                MATCH (p:Part) WHERE elementId(p) IN $nodes
+                DETACH DELETE p
+            ")
+            .param("nodes", delete_nodes))
+            .await
+            .map_err(|e| {
+                eprintln!("Failed to remove stale sid/part lines: {:?}", e);
+                Json("Failed to remove stale sid/part lines")
+            })?;
+        }
+
+        // ── Changed quantities, on the same node (duns is kept) ──
+        if !set_nodes.is_empty() {
+            graph.run(query("
+                UNWIND range(0, size($nodes) - 1) AS i
+                MATCH (p:Part) WHERE elementId(p) = $nodes[i]
+                SET p.quantity = $qtys[i]
+            ")
+            .param("nodes", set_nodes)
+            .param("qtys",  set_qtys))
+            .await
+            .map_err(|e| {
+                eprintln!("Failed to update sid/part quantities: {:?}", e);
+                Json("Failed to update sid/part quantities")
+            })?;
+        }
+
+        // ── New lines. duns comes from the part's ASL row, as upload_in_transit
+        //    does for blank duns, so a later ASN MERGE finds this line instead of
+        //    adding a second one. `i` stays in the grouping so two new lines with
+        //    the same quantity aren't collapsed by the aggregation. ──
+        if !new_sids.is_empty() {
+            graph.run(query("
+                MATCH (t:Trailer {id: $trailer})
+                UNWIND range(0, size($sids) - 1) AS i
+                WITH t, i, $sids[i] AS sidId, $parts[i] AS partNum, $qtys[i] AS qty
+                MATCH (t)-[:HAS_SID]->(sid:SID {id: sidId})
+                OPTIONAL MATCH (a:PartASL {part: partNum})
+                WHERE coalesce(a.duns, '') <> ''
+                WITH sid, i, partNum, qty, min(a.duns) AS aslDuns
+                CREATE (sid)-[:HAS_PART]->(:Part {number: partNum, quantity: qty, duns: coalesce(aslDuns, '')})
+            ")
+            .param("trailer", trailer_id.clone())
+            .param("sids",    new_sids)
+            .param("parts",   new_parts)
+            .param("qtys",    new_qtys))
+            .await
+            .map_err(|e| {
+                eprintln!("Failed to attach sid parts: {:?}", e);
+                Json("Failed to attach sid parts")
+            })?;
+        }
+
+        // ── Trailer links for the lines now on its SIDs. Query 2b ran before the
+        //    new lines existed, so it couldn't link them. ──
+        let sp_parts: Vec<String> = sid_parts.iter().map(|r| r.part.clone()).collect();
+        graph.run(query("
+            MATCH (t:Trailer {id: $trailer})-[:HAS_SID]->(:SID)-[:HAS_PART]->(p:Part)
+            WHERE p.number IN $parts
             MERGE (t)-[:CONTAINS_PART]->(p)
         ")
-        .param("trailer", update_io.Schedule.TrailerID.clone())
-        .param("sids",    sp_sids.clone())
-        .param("parts",   sp_parts.clone())
-        .param("qtys",    sp_qtys.clone());
-
-        graph.run(upsert_sid_parts).await.map_err(|e| {
-            eprintln!("Failed to attach sid parts: {:?}", e);
-            Json("Failed to attach sid parts")
-        })?;
-
-        // Re-pointing an edge can strand the old quantity's node. Scoped to the part
-        // numbers just touched rather than sweeping every :Part in the graph.
-        let sweep_orphans = query("
-            UNWIND $parts AS partNum
-            MATCH (p:Part {number: partNum})
-            WHERE NOT (:SID)-[:HAS_PART]->(p)
-              AND NOT (:Trailer)-[:CONTAINS_PART]->(p)
-            DETACH DELETE p
-        ")
-        .param("parts", sp_parts.clone());
-
-        graph.run(sweep_orphans).await.map_err(|e| {
-            eprintln!("Failed to sweep orphaned parts: {:?}", e);
-            Json("Failed to sweep orphaned parts")
+        .param("trailer", trailer_id)
+        .param("parts",   sp_parts))
+        .await
+        .map_err(|e| {
+            eprintln!("Failed to link trailer parts: {:?}", e);
+            Json("Failed to link trailer parts")
         })?;
     }
 
@@ -526,6 +626,10 @@ pub async fn upload_in_transit(
     );
 
     // ── Query 1: Build Trailer → SID → Part graph ──
+    // duns is part of a Part's MERGE key. IO Add-On sends lines with no duns, so
+    // the ASN arriving later with the real duns would MERGE a second line for the
+    // same shipment and double the IO balance. A blank duns is filled from the
+    // part's ASL row instead; with no ASL row it stays blank.
     for line in lines.iter() {
         let query = query("
             MERGE (trailer:Trailer {id: $trailer})
@@ -533,7 +637,12 @@ pub async fn upload_in_transit(
             ON CREATE SET sid.id = $sid
             MERGE (trailer)-[:HAS_SID]->(sid)
             MERGE (sid)-[:BELONGS_TO]->(trailer)
-            MERGE (sid)-[:HAS_PART]->(part:Part {number: $part, quantity: toInteger($quantity), duns: $duns})
+            WITH sid
+            OPTIONAL MATCH (a:PartASL {part: $part})
+            WHERE $duns = '' AND coalesce(a.duns, '') <> ''
+            WITH sid, min(a.duns) AS aslDuns
+            WITH sid, CASE WHEN $duns <> '' THEN $duns ELSE coalesce(aslDuns, '') END AS duns
+            MERGE (sid)-[:HAS_PART]->(part:Part {number: $part, quantity: toInteger($quantity), duns: duns})
         ")
         .param("trailer",  line.trailer.clone())
         .param("sid",      line.sid.clone())
