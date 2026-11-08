@@ -823,13 +823,13 @@ pub async fn get_live_trailers(
 ) -> Result<Json<Vec<TrailerRecord>>, Json<&'static str>> {
     let graph = &state.graph;
 
-    let q = if role.0.contains("vaa") {
-        query("MATCH (t:LiveTrailer) WHERE t.dockCode = 'V' RETURN t")
-    } else if role.0.contains("univ") {
-        query("MATCH (t:LiveTrailer) WHERE t.dockCode = 'U' RETURN t")
-    } else {
-        query("MATCH (t:LiveTrailer) RETURN t")
-    };
+    // VAA and Universal get their own dock only (null dock = every dock)
+    let q = query("
+        MATCH (t:LiveTrailer)
+        WHERE $dock IS NULL OR trim(t.dockCode) = $dock
+        RETURN t
+    ")
+    .param("dock", crate::permissions::own_dock(&role.0));
 
     match graph.execute(q).await {
         Ok(mut result) => {
@@ -909,11 +909,18 @@ pub async fn get_staged_trailers(
 ) -> Result<Json<Vec<TrailerRecord>>, Json<&'static str>> {
     let graph = &state.graph;
 
+    // VAA and Universal get their own dock only (null dock = every dock)
     let q = query("
-        MATCH (t:StagedTrailer) RETURN t
+        MATCH (t:StagedTrailer)
+        WHERE $dock IS NULL OR trim(t.dockCode) = $dock
+        RETURN t
         UNION
-        MATCH (t:LiveTrailer) WHERE (t.actualEndTime = '' OR t.actualEndTime IS NULL) AND t.gateArrivalTime <> '' RETURN t
-    ");
+        MATCH (t:LiveTrailer)
+        WHERE (t.actualEndTime = '' OR t.actualEndTime IS NULL) AND t.gateArrivalTime <> ''
+          AND ($dock IS NULL OR trim(t.dockCode) = $dock)
+        RETURN t
+    ")
+    .param("dock", crate::permissions::own_dock(&role.0));
 
     match graph.execute(q).await {
         Ok(mut result) => {

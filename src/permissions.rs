@@ -65,13 +65,21 @@ pub fn can(role: &str, action: &str) -> bool {
     role == "admin" || role_actions(role).contains(&action)
 }
 
-/// VAA and Universal only touch their own dock's trailers.
-pub fn dock_allowed(role: &str, dock_code: &str) -> bool {
-    match role {
-        r if r.contains("vaa")  => dock_code.trim() == "V",
-        r if r.contains("univ") => dock_code.trim() == "U",
-        _ => true,
+/// The one dock VAA (V) and Universal (U) work; None for every other role.
+pub fn own_dock(role: &str) -> Option<&'static str> {
+    if role.contains("vaa") {
+        Some("V")
+    } else if role.contains("univ") {
+        Some("U")
+    } else {
+        None
     }
+}
+
+/// VAA and Universal only see and touch their own dock's trailers: the sheets'
+/// fetches, the add-on and trailer pushes, and every write go through this.
+pub fn dock_allowed(role: &str, dock_code: &str) -> bool {
+    own_dock(role).is_none_or(|d| dock_code.trim() == d)
 }
 
 /// The fields in `changed` this role may not write, described by action for the
@@ -212,5 +220,8 @@ mod tests {
         assert!(dock_allowed("vaa", "V") && !dock_allowed("vaa", "U"));
         assert!(dock_allowed("univ", " U ") && !dock_allowed("univ", "V"));
         assert!(dock_allowed("manager", "BE"));
+        assert_eq!(own_dock("vaa"), Some("V"));
+        assert_eq!(own_dock("univ"), Some("U"));
+        assert_eq!(own_dock("dock"), None);
     }
 }

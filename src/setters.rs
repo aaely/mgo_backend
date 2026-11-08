@@ -1908,12 +1908,11 @@ async fn create_add_on(
                         data: Some(MessageData { message: data }),
                     };
                     if let Ok(message) = serde_json::to_string(&ws_msg) {
-                        let dock = &created.dockCode;
                         let ws_list = state.ws_list.lock().await;
                         let topics  = state.ws_topics.lock().await;
                         for (addr, (tx, role)) in ws_list.iter() {
-                            if role.contains("vaa")  && dock != "V" { continue; }
-                            if role.contains("univ") && dock != "U" { continue; }
+                            // VAA and Universal only hear about their own dock
+                            if !permissions::dock_allowed(role, &created.dockCode) { continue; }
                             if !topics.get(addr).is_some_and(|t| t.contains(target.topic)) { continue; }
                             let _ = tx.send(Message::Text(message.clone()));
                         }
@@ -2404,11 +2403,10 @@ pub async fn update_live_trailer(
                         data: Some(MessageData { message: data.to_string() }),
                     };
                     if let Ok(message) = serde_json::to_string(&ws_msg) {
-                        let dock = &updated.dockCode;
                         let ws_list = state.ws_list.lock().await;
                         for (_, (tx, role)) in ws_list.iter() {
-                            if role.contains("vaa")  && dock != "V" { continue; }
-                            if role.contains("univ") && dock != "U" { continue; }
+                            // VAA and Universal only hear about their own dock
+                            if !permissions::dock_allowed(role, &updated.dockCode) { continue; }
                             let _ = tx.send(Message::Text(message.clone()));
                         }
                     }
