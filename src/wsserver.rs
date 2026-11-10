@@ -15,11 +15,8 @@ use tokio_tungstenite::{
 use native_tls::{Identity, TlsAcceptor};
 use tokio_native_tls::TlsAcceptor as AsyncTlsAcceptor;
 use neo4rs::Graph;
-use crate::auth::decode_token;
-use crate::structs::{
-    AppState, IncomingMessage, WebSocketList, WsTopics,
-    TOPIC_PART_ALERTS, TOPIC_LIVE_SHEET, TOPIC_NEXT_SHIFT,
-};
+use crate::auth::{decode_token, Claims};
+use crate::structs::{AppState, IncomingMessage, WebSocketList, WsClient, WsTopics};
 use crate::dock_capacity::WS_DOCK_CAPACITY;
 use crate::route_blackouts::WS_ROUTE_BLACKOUTS;
 use crate::part_comments::WS_PART_COMMENT;
@@ -79,12 +76,12 @@ pub async fn run_ws_server(
                     Err(e) => { println!("TLS handshake failed from {}: {:?}", peer_addr, e); return; }
                 };
                 match do_ws_handshake(tls_stream, secret).await {
-                    Ok((ws, role)) => handle_connection(ws, peer_addr, ws_list, ws_topics, graph, role).await,
+                    Ok((ws, claims)) => handle_connection(ws, peer_addr, ws_list, ws_topics, graph, claims).await,
                     Err(e) => println!("Connection from {} rejected: {:?}", peer_addr, e),
                 }
             } else {
                 match do_ws_handshake(stream, secret).await {
-                    Ok((ws, role)) => handle_connection(ws, peer_addr, ws_list, ws_topics, graph, role).await,
+                    Ok((ws, claims)) => handle_connection(ws, peer_addr, ws_list, ws_topics, graph, claims).await,
                     Err(e) => println!("Connection from {} rejected: {:?}", peer_addr, e),
                 }
             }
@@ -97,12 +94,12 @@ pub async fn run_ws_server(
 async fn do_ws_handshake<S>(
     stream: S,
     secret: String,
-) -> Result<(WebSocketStream<S>, String), tokio_tungstenite::tungstenite::Error>
+) -> Result<(WebSocketStream<S>, Claims), tokio_tungstenite::tungstenite::Error>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let captured_role = Arc::new(std::sync::Mutex::new(String::new()));
-    let role_clone    = captured_role.clone();
+    let captured    = Arc::new(std::sync::Mutex::new(None::<Claims>));
+    let claims_slot = captured.clone();
 
     let ws = accept_hdr_async(stream, move |req: &WsRequest, res: WsResponse| {
         let token = req.headers()
@@ -117,7 +114,7 @@ where
 
         match token.and_then(|t| decode_token(&t, &secret).ok()) {
             Some(claims) => {
-                *role_clone.lock().unwrap() = claims.role;
+                *claims_slot.lock().unwrap() = Some(claims);
                 Ok(res)
             }
             None => {
@@ -130,8 +127,9 @@ where
         }
     }).await?;
 
-    let role = captured_role.lock().unwrap().clone();
-    Ok((ws, role))
+    // The callback above accepted the handshake only after storing the claims
+    let claims = captured.lock().unwrap().take().expect("claims are set before the handshake is accepted");
+    Ok((ws, claims))
 }
 
 async fn handle_connection<S>(
@@ -140,7 +138,7 @@ async fn handle_connection<S>(
     ws_list:   WebSocketList,
     ws_topics: WsTopics,
     _graph:    Arc<Graph>,
-    role:      String,
+    claims:    Claims,
 ) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -149,7 +147,7 @@ async fn handle_connection<S>(
 
     {
         let mut list = ws_list.lock().await;
-        list.insert(peer_addr, (tx, role));
+        list.insert(peer_addr, WsClient { tx, role: claims.role, username: claims.username });
         println!("Added {} to WebSocket list. Total clients: {}", peer_addr, list.len());
     }
 
@@ -200,49 +198,30 @@ async fn handle_connection<S>(
                                         }
                                         continue;
                                     }
-                                    "trailer_update" => {
-                                        println!("Handling trailer_update: {:?}", incoming_message.data);
-                                    }
-                                    "add_on" | "staged_add_on" => {
-                                        println!("Handling {}: {:?}", incoming_message.r#type, incoming_message.data);
-                                    }
-                                    "part_alert" => {
-                                        println!("Handling part_alert: {:?}", incoming_message.data);
-                                    }
-                                    "multi_trailer_update" => {
-                                        println!("Handling multi_trailer_update: {:?}", incoming_message.data);
-                                    }
-                                    // Schedule builder state sync. The payload carries the whole
+                                    // Schedule builder state sync — the one message clients
+                                    // relay to each other. The payload carries the whole
                                     // in-progress schedule, so it is relayed unlogged; only the
                                     // clients on that page act on it.
                                     "schedule_broadcast" => {
                                         println!("Handling schedule_broadcast from {}", peer_addr);
                                     }
-                                    _ => {
-                                        println!("Unknown event type: {:?}", incoming_message.r#type);
+                                    // Everything else is server-sent only. trailer_update,
+                                    // add_on, staged_add_on and part_alert come from the routes
+                                    // and services that wrote the change, filtered there by dock
+                                    // and topic; relayed from a client, they skipped that filter
+                                    // and reached every socket, VAA and Universal included, and
+                                    // let anyone put made-up rows on every board.
+                                    t => {
+                                        println!("Dropped client-sent {} from {}", t, peer_addr);
+                                        continue;
                                     }
                                 }
 
-                                // Opt-in feeds reach subscribers only; everything else
-                                // still relays to every client.
-                                let required_topic = match incoming_message.r#type.as_str() {
-                                    "part_alert"    => Some(TOPIC_PART_ALERTS),
-                                    "add_on"        => Some(TOPIC_LIVE_SHEET),
-                                    "staged_add_on" => Some(TOPIC_NEXT_SHIFT),
-                                    _               => None,
-                                };
-
                                 let response = Message::Text(serde_json::to_string(&incoming_message).unwrap());
                                 let list = ws_list_incoming.lock().await;
-                                let topics = ws_topics_incoming.lock().await;
                                 println!("Broadcasting message to {} clients", list.len());
-                                for (addr, (sender, _role)) in list.iter() {
-                                    if let Some(topic) = required_topic {
-                                        if !topics.get(addr).is_some_and(|t| t.contains(topic)) {
-                                            continue;
-                                        }
-                                    }
-                                    if sender.send(response.clone()).is_err() {
+                                for client in list.values() {
+                                    if client.tx.send(response.clone()).is_err() {
                                         println!("Failed to send message to {}", peer_addr);
                                     }
                                 }

@@ -55,7 +55,7 @@ async fn send(state: &AppState, message_type: &str, payload: Option<String>) {
 
     let ws_list = state.ws_list.lock().await;
     let topics  = state.ws_topics.lock().await;
-    for (addr, (tx, role)) in ws_list.iter() {
+    for (addr, crate::structs::WsClient { tx, role, .. }) in ws_list.iter() {
         if !topics.get(addr).is_some_and(|t| t.contains(TOPIC_IO)) { continue }
         if role.contains("vaa") || role.contains("univ") { continue }
         let _ = tx.send(Message::Text(text.clone()));

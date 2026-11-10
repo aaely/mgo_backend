@@ -90,7 +90,10 @@ pub async fn late_trailer_service(graph: Arc<Graph>, ws_list: WebSocketList) {
                             };
                             if let Ok(message) = serde_json::to_string(&ws_msg) {
                                 let ws_list = ws_list.lock().await;
-                                for (_, (tx, _)) in ws_list.iter() {
+                                for crate::structs::WsClient { tx, role, .. } in ws_list.values() {
+                                    // VAA and Universal only hear about their own dock,
+                                    // as update_live_trailer's trailer_update does
+                                    if !crate::permissions::dock_allowed(role, &updated.dockCode) { continue; }
                                     let _ = tx.send(Message::Text(message.clone()));
                                 }
                             }
@@ -632,7 +635,7 @@ pub async fn part_monitoring_service(
                 // skip every socket that has not subscribed to the topic.
                 let ws_list = ws_list.lock().await;
                 let topics  = ws_topics.lock().await;
-                for (addr, (tx, _)) in ws_list.iter() {
+                for (addr, crate::structs::WsClient { tx, .. }) in ws_list.iter() {
                     let subscribed = topics
                         .get(addr)
                         .is_some_and(|t| t.contains(TOPIC_PART_ALERTS));

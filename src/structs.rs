@@ -7,7 +7,16 @@ use neo4rs::{Graph, Node, query};
 use crate::helpers::*;
 
 
-pub type WebSocketList = Arc<Mutex<HashMap<SocketAddr, (UnboundedSender<Message>, String)>>>;
+/// One open websocket. role and username come from the cookie at the handshake
+/// and stay fixed for the socket's life: role scopes what the socket hears (VAA
+/// and Universal only their own dock), username picks the editRefs it is sent.
+pub struct WsClient {
+    pub tx:       UnboundedSender<Message>,
+    pub role:     String,
+    pub username: String,
+}
+
+pub type WebSocketList = Arc<Mutex<HashMap<SocketAddr, WsClient>>>;
 
 /// Topics each connection has opted into, so a feed can be sent to the clients
 /// actually showing it instead of every socket. Clients opt in with a
@@ -147,7 +156,7 @@ pub struct TrailerUpdate {
     pub changedFields: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Default, Debug)]
+#[derive(Serialize, Deserialize, PartialEq, Default, Debug, Clone)]
 pub struct TrailerRecord {
     #[serde(default)] pub hour: String,
     #[serde(default)] pub origin: String,

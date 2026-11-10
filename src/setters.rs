@@ -1696,7 +1696,7 @@ pub async fn roll_next_shift(
     };
     if let Ok(message) = serde_json::to_string(&ws_msg) {
         let ws_list = state.ws_list.lock().await;
-        for (_, (tx, _)) in ws_list.iter() {
+        for crate::structs::WsClient { tx, .. } in ws_list.values() {
             let _ = tx.send(Message::Text(message.clone()));
         }
     }
@@ -1899,29 +1899,47 @@ async fn create_add_on(
                     receivedTime:    node.get("receivedTime").unwrap_or_default(),
                 };
 
-                // ── Broadcast without editRef (editRefs are per-user, not shared) ──
-                // The live and next-shift boards share one client-side list, so this
-                // goes only to the clients showing the board it belongs to.
-                if let Ok(data) = serde_json::to_string(&created) {
-                    let ws_msg = IncomingMessage {
-                        r#type: target.ws_type.to_string(),
-                        data: Some(MessageData { message: data }),
-                    };
-                    if let Ok(message) = serde_json::to_string(&ws_msg) {
-                        let ws_list = state.ws_list.lock().await;
-                        let topics  = state.ws_topics.lock().await;
-                        for (addr, (tx, role)) in ws_list.iter() {
-                            // VAA and Universal only hear about their own dock
-                            if !permissions::dock_allowed(role, &created.dockCode) { continue; }
-                            if !topics.get(addr).is_some_and(|t| t.contains(target.topic)) { continue; }
-                            let _ = tx.send(Message::Text(message.clone()));
-                        }
-                    }
-                }
+                // ── Broadcast, each recipient with its own editRef ──
+                // editRefs are per-user, so a shared payload could only go out
+                // without one, and everyone but the creator then had a row they
+                // couldn't save until a reload fetched its ref. Each socket gets
+                // the row stamped with its user's ref from the same map
+                // get_live_trailers / get_staged_trailers issue from, so the ref
+                // matches the one a later fetch would hand out. The live and
+                // next-shift boards share one client-side list, so this goes only
+                // to the clients showing the board it belongs to.
+                //
+                // Recipients are collected first and the socket locks released
+                // before edit_refs is taken, so no two of these locks are ever held
+                // together.
+                let recipients: Vec<(tokio::sync::mpsc::UnboundedSender<Message>, String)> = {
+                    let ws_list = state.ws_list.lock().await;
+                    let topics  = state.ws_topics.lock().await;
+                    ws_list.iter()
+                        // VAA and Universal only hear about their own dock
+                        .filter(|(_, c)| permissions::dock_allowed(&c.role, &created.dockCode))
+                        .filter(|(addr, _)| topics.get(*addr).is_some_and(|t| t.contains(target.topic)))
+                        .map(|(_, c)| (c.tx.clone(), c.username.clone()))
+                        .collect()
+                };
 
-                // ── Issue an editRef for the creator so they can update immediately ──
                 let creator_edit_ref = {
                     let mut edit_refs = state.edit_refs.lock().await;
+
+                    for (tx, recipient) in recipients.iter() {
+                        let user_map = edit_refs.entry(recipient.clone()).or_insert_with(HashMap::new);
+                        let stamped = TrailerRecord { editRef: edit_ref_for(user_map, &created.uuid), ..created.clone() };
+                        let Ok(data) = serde_json::to_string(&stamped) else { continue };
+                        let ws_msg = IncomingMessage {
+                            r#type: target.ws_type.to_string(),
+                            data: Some(MessageData { message: data }),
+                        };
+                        if let Ok(message) = serde_json::to_string(&ws_msg) {
+                            let _ = tx.send(Message::Text(message));
+                        }
+                    }
+
+                    // ── The creator's ref, returned so they can update immediately ──
                     let user_map = edit_refs
                         .entry(username.to_string())
                         .or_insert_with(HashMap::new);
@@ -2404,7 +2422,7 @@ pub async fn update_live_trailer(
                     };
                     if let Ok(message) = serde_json::to_string(&ws_msg) {
                         let ws_list = state.ws_list.lock().await;
-                        for (_, (tx, role)) in ws_list.iter() {
+                        for crate::structs::WsClient { tx, role, .. } in ws_list.values() {
                             // VAA and Universal only hear about their own dock
                             if !permissions::dock_allowed(role, &updated.dockCode) { continue; }
                             let _ = tx.send(Message::Text(message.clone()));

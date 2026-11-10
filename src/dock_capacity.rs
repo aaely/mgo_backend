@@ -172,7 +172,7 @@ pub async fn set_dock_capacity(
                 };
                 if let Ok(message) = serde_json::to_string(&ws_msg) {
                     let ws_list = state.ws_list.lock().await;
-                    for (_, (tx, _)) in ws_list.iter() {
+                    for crate::structs::WsClient { tx, .. } in ws_list.values() {
                         let _ = tx.send(Message::Text(message.clone()));
                     }
                 }
