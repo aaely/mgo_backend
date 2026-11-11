@@ -3056,6 +3056,82 @@ pub async fn upload_part_transit(
     Ok(Json("PartTransit uploaded successfully"))
 }
 
+/// Saves LMS's exception comment report as LMSExceptionComments nodes, one per
+/// load, entered time and comment, so re-uploading a report doesn't duplicate.
+/// Every upload first purges comments entered more than two days ago.
+///
+/// Each comment also takes the gate arrival of its load's trailer on the sheets,
+/// the live one first. A load not on either sheet (or not yet arrived) keeps
+/// whatever an earlier upload found, so a trailer rolling off doesn't blank it.
+#[post("/api/upload_lms_exception_comments", format = "json", data = "<data>")]
+pub async fn upload_lms_exception_comments(
+    data:  Json<Vec<LMSExceptionComment>>,
+    state: &State<AppState>,
+    _user: AuthenticatedUser,
+) -> Result<Json<Vec<LMSExceptionComment>>, (Status, Json<String>)> {
+    let graph = &state.graph;
+
+    // EnteredDate starts with the day (2026-11-10 08:28:50.000 -06:00)
+    let purge = query("
+        MATCH (c:LMSExceptionComments)
+        WHERE c.enteredDate =~ '[0-9]{4}-[0-9]{2}-[0-9]{2}.*'
+          AND date(left(c.enteredDate, 10)) < date() - duration({days: 2})
+        DETACH DELETE c
+    ");
+    graph.run(purge).await.map_err(|e| {
+        eprintln!("Failed to purge old LMSExceptionComments: {:?}", e);
+        (Status::InternalServerError, Json("Failed to purge old exception comments".to_string()))
+    })?;
+
+    let mut saved = Vec::with_capacity(data.len());
+    for c in data.iter() {
+        let load_no = c.loadNo.trim();
+        if load_no.is_empty() {
+            continue;
+        }
+        let q = query("
+            MERGE (c:LMSExceptionComments {loadNo: $loadNo, enteredDate: $enteredDate, comment: $comment})
+            SET c.actualArrivalTime = $actualArrivalTime,
+                c.schedArrivalTime  = $schedArrivalTime
+            WITH c
+            OPTIONAL MATCH (t)
+            WHERE (t:LiveTrailer OR t:StagedTrailer)
+              AND trim(t.lmsAccent) = $loadNo
+              AND coalesce(t.gateArrivalTime, '') <> ''
+            WITH c, t ORDER BY CASE WHEN t:LiveTrailer THEN 0 ELSE 1 END
+            WITH c, head(collect(t)) AS g
+            SET c.gateArrivalTime = coalesce(g.gateArrivalTime, c.gateArrivalTime, ''),
+                c.gateArrivalDate = coalesce(g.gateArrivalDate, c.gateArrivalDate, '')
+            RETURN c
+        ")
+            .param("loadNo",            load_no)
+            .param("enteredDate",       c.enteredDate.trim())
+            .param("comment",           c.comment.trim())
+            .param("actualArrivalTime", c.actualArrivalTime.trim())
+            .param("schedArrivalTime",  c.schedArrivalTime.trim());
+
+        let mut result = graph.execute(q).await.map_err(|e| {
+            eprintln!("Failed to upload LMSExceptionComments: {:?}", e);
+            (Status::InternalServerError, Json("Failed to save the exception comments".to_string()))
+        })?;
+        if let Ok(Some(row)) = result.next().await {
+            if let Ok(n) = row.get::<Node>("c") {
+                saved.push(LMSExceptionComment {
+                    loadNo:            n.get("loadNo").unwrap_or_default(),
+                    enteredDate:       n.get("enteredDate").unwrap_or_default(),
+                    comment:           n.get("comment").unwrap_or_default(),
+                    actualArrivalTime: n.get("actualArrivalTime").unwrap_or_default(),
+                    schedArrivalTime:  n.get("schedArrivalTime").unwrap_or_default(),
+                    gateArrivalTime:   n.get("gateArrivalTime").unwrap_or_default(),
+                    gateArrivalDate:   n.get("gateArrivalDate").unwrap_or_default(),
+                });
+            }
+        }
+    }
+
+    Ok(Json(saved))
+}
+
 #[post("/api/upload_part_asl", format = "json", data = "<data>")]
 pub async fn upload_part_asl(
     data:  Json<Vec<PartASL>>,

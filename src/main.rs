@@ -184,6 +184,7 @@ async fn main() {
             upload_part_asn,
             upload_part_route,
             upload_part_transit,
+            upload_lms_exception_comments,
             upload_part_out,
             update_io,
             update_io_schedule,

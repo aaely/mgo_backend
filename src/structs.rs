@@ -578,6 +578,22 @@ pub struct PartTransit {
     pub transitHours: f64,
 }
 
+/// A row of LMS's exception comment report, saved as an LMSExceptionComments
+/// node. The upload sends the first five; the gate arrival is filled in from
+/// the load's LiveTrailer or StagedTrailer when it's saved.
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct LMSExceptionComment {
+    pub loadNo:            String,
+    pub enteredDate:       String,
+    pub comment:           String,
+    pub actualArrivalTime: String,
+    pub schedArrivalTime:  String,
+    #[serde(default)]
+    pub gateArrivalTime:   String,
+    #[serde(default)]
+    pub gateArrivalDate:   String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct RouteDelivering {
     pub trailer: String,
