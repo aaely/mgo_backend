@@ -3060,9 +3060,8 @@ pub async fn upload_part_transit(
 /// load, entered time and comment, so re-uploading a report doesn't duplicate.
 /// Every upload first purges comments entered more than two days ago.
 ///
-/// Each comment also takes the gate arrival of its load's trailer on the sheets,
-/// the live one first. A load not on either sheet (or not yet arrived) keeps
-/// whatever an earlier upload found, so a trailer rolling off doesn't blank it.
+/// Only the report's own columns are saved; exception_agent reads the trailer
+/// side from the LiveTrailer each time it runs.
 #[post("/api/upload_lms_exception_comments", format = "json", data = "<data>")]
 pub async fn upload_lms_exception_comments(
     data:  Json<Vec<LMSExceptionComment>>,
@@ -3093,15 +3092,7 @@ pub async fn upload_lms_exception_comments(
             MERGE (c:LMSExceptionComments {loadNo: $loadNo, enteredDate: $enteredDate, comment: $comment})
             SET c.actualArrivalTime = $actualArrivalTime,
                 c.schedArrivalTime  = $schedArrivalTime
-            WITH c
-            OPTIONAL MATCH (t)
-            WHERE (t:LiveTrailer OR t:StagedTrailer)
-              AND trim(t.lmsAccent) = $loadNo
-              AND coalesce(t.gateArrivalTime, '') <> ''
-            WITH c, t ORDER BY CASE WHEN t:LiveTrailer THEN 0 ELSE 1 END
-            WITH c, head(collect(t)) AS g
-            SET c.gateArrivalTime = coalesce(g.gateArrivalTime, c.gateArrivalTime, ''),
-                c.gateArrivalDate = coalesce(g.gateArrivalDate, c.gateArrivalDate, '')
+            REMOVE c.gateArrivalTime, c.gateArrivalDate
             RETURN c
         ")
             .param("loadNo",            load_no)
@@ -3122,8 +3113,6 @@ pub async fn upload_lms_exception_comments(
                     comment:           n.get("comment").unwrap_or_default(),
                     actualArrivalTime: n.get("actualArrivalTime").unwrap_or_default(),
                     schedArrivalTime:  n.get("schedArrivalTime").unwrap_or_default(),
-                    gateArrivalTime:   n.get("gateArrivalTime").unwrap_or_default(),
-                    gateArrivalDate:   n.get("gateArrivalDate").unwrap_or_default(),
                 });
             }
         }

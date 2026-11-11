@@ -19,6 +19,7 @@ mod route_blackouts;
 mod io_feed;
 mod route_spacing;
 mod part_comments;
+mod exception_agent;
 use rocket::data::ToByteUnit;
 use rocket::{get, routes};
 use rocket::fs::{FileServer, NamedFile};
@@ -134,6 +135,13 @@ async fn main() {
             let current_alerts = state.current_alerts.clone();
             tokio::spawn(async move {
                 part_monitoring_service(graph3, ws_list3, ws_topics3, alerted, current_alerts).await;
+            });
+
+            // LMS exception comments -> agent -> Traffic Comments (off without EXCEPTION_AGENT_URL)
+            let graph4   = state.graph.clone();
+            let ws_list4 = state.ws_list.clone();
+            tokio::spawn(async move {
+                exception_agent::exception_agent_service(graph4, ws_list4).await;
             });
         })))
         .mount("/", FileServer::from("dist"))

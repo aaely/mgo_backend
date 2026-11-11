@@ -579,8 +579,8 @@ pub struct PartTransit {
 }
 
 /// A row of LMS's exception comment report, saved as an LMSExceptionComments
-/// node. The upload sends the first five; the gate arrival is filled in from
-/// the load's LiveTrailer or StagedTrailer when it's saved.
+/// node. The trailer's side (gate arrival, audit start, statusOX) is read from
+/// the load's LiveTrailer when exception_agent runs, not stored here.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct LMSExceptionComment {
     pub loadNo:            String,
@@ -588,10 +588,6 @@ pub struct LMSExceptionComment {
     pub comment:           String,
     pub actualArrivalTime: String,
     pub schedArrivalTime:  String,
-    #[serde(default)]
-    pub gateArrivalTime:   String,
-    #[serde(default)]
-    pub gateArrivalDate:   String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]

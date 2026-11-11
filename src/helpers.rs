@@ -379,3 +379,50 @@ pub async fn lowest_doh_deck(graph: &neo4rs::Graph, route: &str) -> String {
         }
     }
 }
+
+/// A LiveTrailer/StagedTrailer node as the row the boards show, with no editRef
+/// (a trailer_update recipient keeps its own).
+pub fn trailer_from_node(node: &neo4rs::Node) -> TrailerRecord {
+    let s = |k: &str| node.get::<String>(k).unwrap_or_default();
+    TrailerRecord {
+        uuid:              s("uuid"),
+        origin:            s("origin"),
+        hour:              s("hour"),
+        dateShift:         s("dateShift"),
+        lmsAccent:         s("lmsAccent"),
+        dockCode:          s("dockCode"),
+        acaType:           s("acaType"),
+        status:            s("status"),
+        routeId:           s("routeId"),
+        scac:              s("scac"),
+        trailer1:          s("trailer1"),
+        trailer2:          s("trailer2"),
+        firstSupplier:     s("firstSupplier"),
+        dockStopSequence:  s("dockStopSequence"),
+        planStartDate:     s("planStartDate"),
+        planStartTime:     s("planStartTime"),
+        scheduleStartDate: s("scheduleStartDate"),
+        adjustedStartTime: s("adjustedStartTime"),
+        scheduleEndDate:   s("scheduleEndDate"),
+        scheduleEndTime:   s("scheduleEndTime"),
+        gateArrivalTime:   s("gateArrivalTime"),
+        actualStartTime:   s("actualStartTime"),
+        actualEndTime:     s("actualEndTime"),
+        gateArrivalDate:   s("gateArrivalDate"),
+        doorArrivalDate:   s("doorArrivalDate"),
+        actualStartDate:   s("actualStartDate"),
+        actualEndDate:     s("actualEndDate"),
+        receivedDate:      s("receivedDate"),
+        receivedTime:      s("receivedTime"),
+        statusOX:          s("statusOX"),
+        stat:              s("stat"),
+        loadComments:      s("loadComments"),
+        dockComments:      s("dockComments"),
+        ryderComments:     s("ryderComments"),
+        gmComments:        Some(s("gmComments")),
+        lowestDoh:         Some(s("lowestDoh")),
+        editRef:           String::new(),
+        door:              s("door"),
+        doorArrivalTime:   s("doorArrivalTime"),
+    }
+}
