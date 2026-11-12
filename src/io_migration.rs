@@ -11,9 +11,9 @@
 //! creates (loadNum or type starting "IO") — those put a scheduled IO trailer on
 //! the schedule builder.
 //!
-//! Node identity is carried over exactly — SID {id, ciscoID} and Part {number,
-//! quantity, duns} are upload_in_transit's MERGE keys — so the next in-transit
-//! upload in the target lands on the imported nodes instead of duplicating them.
+//! Node identity follows upload_in_transit's MERGE keys — SID {id, ciscoID:
+//! '18008'} and Part {number, quantity, duns} — so the next in-transit upload in
+//! the target lands on the imported nodes instead of duplicating them.
 //! Import only adds and updates, never deletes, and runs as one transaction.
 //!
 //! /api/import_exception_sheet and /api/import_dy_sheet serve the Exception Log
@@ -51,9 +51,10 @@ fn server_error(context: &str, e: impl std::fmt::Debug) -> ApiError {
 pub struct IoLine {
     pub trailer:      String,
     pub sid:          String,
-    /// Uploaded SIDs carry ciscoID as part of their MERGE key (it may be ''); SIDs
-    /// added by hand in the IO screen have no ciscoID at all. The two must stay
-    /// distinct or the next upload would MERGE a duplicate SID.
+    /// What the source SID carried, kept so older export files still load. The
+    /// import ignores both: every writer now MERGEs a SID on ciscoID 18008, so
+    /// that is what the imported SID gets, or the next upload would MERGE a
+    /// duplicate of it.
     pub has_cisco_id: bool,
     pub cisco_id:     String,
     pub part:         String,
@@ -361,22 +362,16 @@ async fn import_active(txn: &mut Txn, lines: &[IoLine]) -> Result<(usize, usize)
         .map_err(|e| format!("Failed to write schedule for {}: {e:?}", l.trailer))?;
     }
 
-    // ── SID lines. Uploaded SIDs (with a ciscoID) go first: a hand-added SID
-    //    MERGEs on id alone, so it has to find the uploaded node the way it did
-    //    in the source rather than create a second one. ──
+    // ── SID lines. ciscoID is always 18008 — the key the uploads and update_io
+    //    MERGE a SID on — whatever the source node carried. ──
     let mut written = 0;
     let with_sid: Vec<&IoLine> = lines.iter().filter(|l| !l.sid.is_empty()).collect();
-    let ordered = with_sid.iter().filter(|l| l.has_cisco_id).chain(with_sid.iter().filter(|l| !l.has_cisco_id));
 
-    for l in ordered {
-        let sid_merge = if l.has_cisco_id {
-            "MERGE (sid:SID {id: $sid, ciscoID: $cisco})
+    for l in with_sid.iter() {
+        let sid_merge =
+            "MERGE (sid:SID {id: $sid, ciscoID: '18008'})
              MERGE (t)-[:HAS_SID]->(sid)
-             MERGE (sid)-[:BELONGS_TO]->(t)"
-        } else {
-            "MERGE (sid:SID {id: $sid})
-             MERGE (t)-[:HAS_SID]->(sid)"
-        };
+             MERGE (sid)-[:BELONGS_TO]->(t)";
         let part_merge = match (l.on_sid, l.on_trailer) {
             (true, true)  => "MERGE (sid)-[:HAS_PART]->(p:Part {number: $part, quantity: $quantity, duns: $duns})
                               MERGE (t)-[:CONTAINS_PART]->(p)",
@@ -387,7 +382,6 @@ async fn import_active(txn: &mut Txn, lines: &[IoLine]) -> Result<(usize, usize)
         txn.run(query(&format!("MATCH (t:Trailer {{id: $trailer}}) {sid_merge} {part_merge}"))
             .param("trailer",  l.trailer.clone())
             .param("sid",      l.sid.clone())
-            .param("cisco",    l.cisco_id.clone())
             .param("part",     l.part.clone())
             .param("quantity", l.quantity)
             .param("duns",     l.duns.clone()))

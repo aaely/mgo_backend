@@ -152,10 +152,17 @@ pub async fn update_io(
     })?;
 
     // ── Query 3b: Merge new SID relationships ──
+    // ciscoID is always 18008, and it is part of the key every upload MERGEs a
+    // SID on. A SID typed here used to be created without it, so the upload that
+    // later carried the same SID made a second node with its own copy of the
+    // part lines. SIDs the trailer already holds are skipped: MERGE-ing on the id
+    // would otherwise bind every node with that id, other trailers' included.
     let add_sids_query = query("
         MATCH (t:Trailer {id: $trailer})
         UNWIND $sids AS sid_id
-        MERGE (sid:SID {id: sid_id})
+        WITH t, sid_id
+        WHERE NOT EXISTS { MATCH (t)-[:HAS_SID]->(:SID {id: sid_id}) }
+        MERGE (sid:SID {id: sid_id, ciscoID: '18008'})
         MERGE (t)-[:HAS_SID]->(sid)
     ")
     .param("trailer", update_io.Schedule.TrailerID.clone())
@@ -626,6 +633,8 @@ pub async fn upload_in_transit(
     );
 
     // ── Query 1: Build Trailer → SID → Part graph ──
+    // ciscoID is always 18008, whatever the line carries, so every writer lands
+    // on the same SID node.
     // duns is part of a Part's MERGE key. IO Add-On sends lines with no duns, so
     // the ASN arriving later with the real duns would MERGE a second line for the
     // same shipment and double the IO balance. A blank duns is filled from the
@@ -633,7 +642,7 @@ pub async fn upload_in_transit(
     for line in lines.iter() {
         let query = query("
             MERGE (trailer:Trailer {id: $trailer})
-            MERGE (sid:SID {id: $sid, ciscoID: $cisco})
+            MERGE (sid:SID {id: $sid, ciscoID: '18008'})
             ON CREATE SET sid.id = $sid
             MERGE (trailer)-[:HAS_SID]->(sid)
             MERGE (sid)-[:BELONGS_TO]->(trailer)
@@ -646,7 +655,6 @@ pub async fn upload_in_transit(
         ")
         .param("trailer",  line.trailer.clone())
         .param("sid",      line.sid.clone())
-        .param("cisco",    line.cisco.clone())
         .param("part",     line.part.clone())
         .param("quantity", line.quantity.clone())
         .param("duns",     line.duns.clone());
@@ -1301,11 +1309,16 @@ pub async fn delivered(
     };
 
     // ── Query 3: Delete Trailer and its relationships from active pool ──
+    // A SID another trailer still holds (a container and the line haul it was
+    // consolidated onto) stays with that trailer, part lines included; deleting
+    // it here took those lines off the other trailer too. The trailer and its
+    // schedule go either way, SIDs with no part lines included.
     let delete_query = query("
         MATCH (t:Trailer {id: $trailer})-[:HAS_SCHEDULE]->(s:Schedule)
-        WITH t,s
-        MATCH (t)-[:HAS_SID]->(sid:SID)-[:HAS_PART]->(p:Part)
-        DETACH DELETE t, s, sid, p
+        OPTIONAL MATCH (t)-[:HAS_SID]->(sid:SID)
+        WHERE NOT EXISTS { MATCH (o:Trailer)-[:HAS_SID]->(sid) WHERE o <> t }
+        OPTIONAL MATCH (sid)-[:HAS_PART]->(p:Part)
+        DETACH DELETE p, sid, s, t
     ")
     .param("trailer", req.trailer_id.clone());
 
@@ -1314,8 +1327,7 @@ pub async fn delivered(
         Json("Failed to delete trailer")
     })?;
 
-    // Usually a removal; a trailer with no SID parts isn't deleted above and
-    // goes out as an update instead
+    // The trailer is gone, so this goes out as a removal
     publish_io_trailer(state, &req.trailer_id).await;
 
     Ok(Json(delivered))
@@ -2911,10 +2923,147 @@ pub async fn upload_part_asn(
         })?;
     }
 
+    // Ahead of the merge, so the ASN's SIDs land on the repaired nodes
+    cleanup_io_graph(graph).await;
     build_io_from_asn(graph, &data).await?;
     publish_io_refresh(state).await;
 
     Ok(Json("PartASN uploaded successfully"))
+}
+
+/// Runs one cleanup statement that ends in `RETURN count(*) AS n` and gives back
+/// the count. The stream is drained: the transaction's connection can't take the
+/// next query while a result is still open.
+async fn cleanup_count(txn: &mut neo4rs::Txn, cypher: &str) -> Result<i64, neo4rs::Error> {
+    let mut result = txn.execute(query(cypher)).await?;
+    let mut n: i64 = 0;
+    while let Some(row) = result.next(txn.handle()).await? {
+        n = row.get("n").unwrap_or(0);
+    }
+    Ok(n)
+}
+
+/// What cleanup_io_graph changed, for its log line.
+struct IoCleanup {
+    cisco_set:       i64,
+    sids_merged:     i64,
+    lines_collapsed: i64,
+    loose_parts:     i64,
+    stray_links:     i64,
+}
+
+/// The cleanup's statements, in order. See cleanup_io_graph.
+async fn run_io_cleanup(txn: &mut neo4rs::Txn) -> Result<IoCleanup, neo4rs::Error> {
+    // ── Every SID carries ciscoID 18008. SIDs typed on the IO screen had none,
+    //    and older uploads wrote whatever the report held. ──
+    let cisco_set = cleanup_count(txn, "
+        MATCH (s:SID)
+        WHERE s.ciscoID IS NULL OR s.ciscoID <> '18008'
+        SET s.ciscoID = '18008'
+        RETURN count(*) AS n
+    ").await?;
+
+    // ── SID nodes sharing an id become one. The lowest node of each id is kept
+    //    and one duplicate is folded into it per round, so an id with three
+    //    nodes takes two rounds and each fold sees the lines the last one moved. ──
+    const PAIR: &str = "
+        MATCH (s:SID) WHERE s.id IS NOT NULL
+        WITH s.id AS id, s ORDER BY elementId(s)
+        WITH id, collect(s) AS nodes
+        WHERE size(nodes) > 1
+        WITH nodes[0] AS keep, nodes[1] AS d
+    ";
+    let mut sids_merged = 0;
+    let mut lines_collapsed = 0;
+    for _ in 0..10 {
+        // Trailers holding the duplicate hold the kept node instead
+        txn.run(query(&format!("{PAIR}
+            MATCH (t:Trailer)-[:HAS_SID]->(d)
+            MERGE (t)-[:HAS_SID]->(keep)
+            MERGE (keep)-[:BELONGS_TO]->(t)
+        "))).await?;
+
+        // A line both nodes carry (same part, same quantity) is one shipment
+        // line entered twice. The kept node's copy stays, takes over the
+        // duplicate's trailer links, and takes its duns if it had none.
+        lines_collapsed += cleanup_count(txn, &format!("{PAIR}
+            MATCH (d)-[:HAS_PART]->(pd:Part)
+            MATCH (keep)-[:HAS_PART]->(pk:Part)
+            WHERE pk.number = pd.number
+              AND toInteger(coalesce(pk.quantity, 0)) = toInteger(coalesce(pd.quantity, 0))
+            WITH pd, pk ORDER BY elementId(pk)
+            WITH pd, head(collect(pk)) AS pk
+            SET pk.duns = CASE WHEN coalesce(pk.duns, '') = '' THEN coalesce(pd.duns, '') ELSE pk.duns END
+            WITH pd, pk
+            OPTIONAL MATCH (t:Trailer)-[:CONTAINS_PART]->(pd)
+            FOREACH (_ IN CASE WHEN t IS NULL THEN [] ELSE [1] END | MERGE (t)-[:CONTAINS_PART]->(pk))
+            WITH DISTINCT pd
+            DETACH DELETE pd
+            RETURN count(*) AS n
+        ")).await?;
+
+        // Every other line moves across as it is
+        txn.run(query(&format!("{PAIR}
+            MATCH (d)-[:HAS_PART]->(pd:Part)
+            MERGE (keep)-[:HAS_PART]->(pd)
+        "))).await?;
+
+        let merged = cleanup_count(txn, &format!("{PAIR}
+            DETACH DELETE d
+            RETURN count(*) AS n
+        ")).await?;
+        if merged == 0 { break }
+        sids_merged += merged;
+    }
+
+    // ── Parts no SID carries. A part line belongs to one SID; without it the
+    //    line shows in a trailer's part list but under none of its SIDs. ──
+    let loose_parts = cleanup_count(txn, "
+        MATCH (p:Part)
+        WHERE NOT (:SID)-[:HAS_PART]->(p)
+        DETACH DELETE p
+        RETURN count(*) AS n
+    ").await?;
+
+    // ── Trailer links to a line on a SID the trailer doesn't hold. Deleting
+    //    that SID's own trailer used to leave such a line behind with no SID. ──
+    let stray_links = cleanup_count(txn, "
+        MATCH (t:Trailer)-[c:CONTAINS_PART]->(p:Part)
+        WHERE NOT (t)-[:HAS_SID]->(:SID)-[:HAS_PART]->(p)
+        DELETE c
+        RETURN count(*) AS n
+    ").await?;
+
+    Ok(IoCleanup { cisco_set, sids_merged, lines_collapsed, loose_parts, stray_links })
+}
+
+/// Repairs what earlier versions of the IO writers left in the graph: SIDs with
+/// no (or another) ciscoID, several SID nodes for one id, parts no SID carries,
+/// and trailers linked to lines on SIDs they don't hold. One transaction, so a
+/// failure leaves the graph as it was. Best effort: a failure is logged and the
+/// upload carries on, since the ASN merge doesn't depend on it.
+async fn cleanup_io_graph(graph: &neo4rs::Graph) {
+    let mut txn = match graph.start_txn().await {
+        Ok(txn) => txn,
+        Err(e) => {
+            eprintln!("IO cleanup skipped, failed to start transaction: {:?}", e);
+            return;
+        }
+    };
+
+    match run_io_cleanup(&mut txn).await {
+        Ok(c) => match txn.commit().await {
+            Ok(()) => println!(
+                "IO cleanup: {} SIDs given ciscoID 18008, {} duplicate SID nodes merged ({} duplicate lines dropped), {} parts with no SID removed, {} stray trailer-part links removed",
+                c.cisco_set, c.sids_merged, c.lines_collapsed, c.loose_parts, c.stray_links
+            ),
+            Err(e) => eprintln!("IO cleanup failed to commit: {:?}", e),
+        },
+        Err(e) => {
+            let _ = txn.rollback().await;
+            eprintln!("IO cleanup rolled back: {:?}", e);
+        }
+    }
 }
 
 /// Builds IO containers (Trailer -> SID -> Part, Schedule) from the ASN, the same
@@ -3850,10 +3999,12 @@ pub async fn unschedule_io(
 
 /// Remove an IO trailer along with its schedule, SIDs and parts.
 ///
-/// SID nodes are merged on {id, ciscoID} and Part nodes on {number, quantity, duns},
-/// so both are shared across trailers — deleting them outright would strip nodes
-/// other trailers still reference. The trailer and its schedule go unconditionally;
-/// SIDs and parts are only removed once nothing points at them any more.
+/// SID nodes are merged on {id, ciscoID}, so a SID can be shared across trailers
+/// — deleting it outright would strip lines another trailer still carries. The
+/// trailer and its schedule go unconditionally; a SID is only removed once no
+/// trailer holds it, and its part lines go with it. A part line belongs to its
+/// one SID, so it never outlives it — keeping it because some other trailer
+/// still pointed at it is what left parts with no SID.
 #[post("/api/delete_io_trailer", format = "json", data = "<req>")]
 pub async fn delete_io_trailer(
     req:   Json<DeleteIoTrailerRequest>,
@@ -3880,11 +4031,12 @@ pub async fn delete_io_trailer(
         Json("Failed to delete trailer")
     })?;
 
-    // ── SIDs no trailer references any more ──
+    // ── SIDs no trailer references any more, with their part lines ──
     let orphan_sids = query("
         MATCH (sid:SID)
         WHERE NOT (:Trailer)-[:HAS_SID]->(sid)
-        DETACH DELETE sid
+        OPTIONAL MATCH (sid)-[:HAS_PART]->(p:Part)
+        DETACH DELETE p, sid
     ");
 
     graph.run(orphan_sids).await.map_err(|e| {
