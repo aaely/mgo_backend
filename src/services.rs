@@ -1,7 +1,7 @@
 use crate::structs::*;
-// send_sms is only used by the part alert SMS, commented out in dispatch_alert;
-// add it back here when that's reactivated.
-use crate::helpers::{send_email, /* send_sms, */ post_slack_message, parse_asn_arrival};
+// send_sms and post_slack_message are only used by the part alert notifications,
+// commented out in dispatch_alert; add them back here when those are reactivated.
+use crate::helpers::{send_email, /* send_sms, post_slack_message, */ parse_asn_arrival};
 use neo4rs::{query, Node, Graph};
 use chrono::Datelike;
 use tokio::sync::Mutex;
@@ -13,6 +13,16 @@ use std::sync::Arc;
 /// further out than this multiple of its transit time: a load shipped now still
 /// arrives in time.
 const TRANSIT_ALERT_FACTOR: f64 = 1.25;
+
+/// A rescuing ASN that lands while the part's balance is under this share of its
+/// bank gets flagged, whether or not anything else about the part alerts.
+const LOW_BANK_FRACTION: f64 = 0.5;
+
+/// alert_level of that flag. It is not one of the escalation levels (Hot /
+/// Emerging Issue / Shut Down): it marks an ASN, and a part can carry it next to
+/// one of those. The Scan page marks the part and the ASN with it; the Part
+/// Alerts page lists it after the escalation levels.
+const LOW_BANK_LEVEL: &str = "Below 50% Bank";
 
 pub async fn late_trailer_service(graph: Arc<Graph>, ws_list: WebSocketList) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
@@ -144,8 +154,12 @@ struct AlertParams<'a> {
     next_asn_display: String,
     next_trailer: String,
     hours_until_rescue: f64,
+    /// Balance on hand as the ASN lands; only the low-bank flag carries it.
+    arrival_bal: Option<f64>,
 }
 
+// `now` and `alerted_parts` are only used by the notifications commented out below
+#[allow(unused_variables)]
 async fn dispatch_alert(
     p: AlertParams<'_>,
     now: chrono::DateTime<chrono_tz::Tz>,
@@ -160,34 +174,39 @@ async fn dispatch_alert(
             p.level, p.part, p.asl.deck, p.hours_to_out, p.next_trailer, p.next_asn_display, p.hours_until_rescue
         );
 
-        let should_sms = {
-            let alerted = alerted_parts.lock().await;
-            match alerted.get(p.part) {
-                Some(last) => now.signed_duration_since(*last).num_minutes() > 30,
-                None => true,
-            }
-        };
-
-        if should_sms {
+        // ── Notifications: all disabled. Part alerts only show on the Part Alerts
+        //    and Scan pages now; nothing is pushed to Slack, SMS or email. Kept
+        //    for reference. To reactivate Slack, uncomment from `let should_sms`
+        //    down to the closing brace of `if should_sms`, and restore
+        //    post_slack_message in the imports at the top. ──
+        // let should_sms = {
+        //     let alerted = alerted_parts.lock().await;
+        //     match alerted.get(p.part) {
+        //         Some(last) => now.signed_duration_since(*last).num_minutes() > 30,
+        //         None => true,
+        //     }
+        // };
+        //
+        // if should_sms {
             // ── Slack, replacing the SMS and email below ──
             // A successful post starts the part's 30-minute quiet period (should_sms
             // above), the job the SMS send used to do. On failure it stays unmarked
             // so the next 15-minute cycle tries again.
-            let icon = if p.level == "Shut Down" { ":rotating_light:" } else { ":warning:" };
-            let text = format!(
-                "{icon} *Part Alert: {}*\n\
-                 Part: {} | Deck: {} | Supplier: {}\n\
-                 {}\n\
-                 *{:.1} hrs to outage* | Next ASN: {} on {} | Rescue margin: {:.1} hrs",
-                p.level.to_uppercase(),
-                p.part, p.asl.deck, p.asl.supplier,
-                p.asl.desc,
-                p.hours_to_out, p.next_trailer, p.next_asn_display, p.hours_until_rescue,
-            );
-            match post_slack_message("SLACK_WEBHOOK_PART_ALERTS", &text).await {
-                Ok(()) => { alerted_parts.lock().await.insert(p.part.to_string(), now); }
-                Err(e) => eprintln!("Failed to send part alert to Slack: {:?}", e),
-            }
+            // let icon = if p.level == "Shut Down" { ":rotating_light:" } else { ":warning:" };
+            // let text = format!(
+            //     "{icon} *Part Alert: {}*\n\
+            //      Part: {} | Deck: {} | Supplier: {}\n\
+            //      {}\n\
+            //      *{:.1} hrs to outage* | Next ASN: {} on {} | Rescue margin: {:.1} hrs",
+            //     p.level.to_uppercase(),
+            //     p.part, p.asl.deck, p.asl.supplier,
+            //     p.asl.desc,
+            //     p.hours_to_out, p.next_trailer, p.next_asn_display, p.hours_until_rescue,
+            // );
+            // match post_slack_message("SLACK_WEBHOOK_PART_ALERTS", &text).await {
+            //     Ok(()) => { alerted_parts.lock().await.insert(p.part.to_string(), now); }
+            //     Err(e) => eprintln!("Failed to send part alert to Slack: {:?}", e),
+            // }
 
             // ── SMS: disabled in favour of Slack. To reactivate, uncomment, restore
             //    send_sms in the imports at the top, and move the alerted_parts
@@ -215,7 +234,7 @@ async fn dispatch_alert(
             //         eprintln!("Failed to send part alert email: {:?}", e);
             //     }
             // }
-        }
+        // }
     }
 
     alerts.push(PartAlert {
@@ -230,6 +249,7 @@ async fn dispatch_alert(
         next_trailer:       p.next_trailer,
         alert_level:        p.level.to_string(),
         hours_until_rescue: p.hours_until_rescue,
+        arrival_bal:        p.arrival_bal,
     });
 }
 
@@ -535,7 +555,8 @@ pub async fn part_monitoring_service(
                 if let Some(level) = level {
                     dispatch_alert(
                         AlertParams { part, asl, level, hours_to_out: final_hours_to_out,
-                            next_asn_display, next_trailer, hours_until_rescue },
+                            next_asn_display, next_trailer, hours_until_rescue,
+                            arrival_bal: None },
                         now, &alerted_parts, &mut alerts,
                     ).await;
                 }
@@ -549,9 +570,9 @@ pub async fn part_monitoring_service(
                     }
                 });
 
-                let (abs_idx, eda, eta, qty) = match saving {
-                    Some((rel_idx, (eda, eta, _, qty))) => {
-                        (asn_index + rel_idx, eda.clone(), eta.clone(), *qty)
+                let (abs_idx, eda, eta, trailer, qty) = match saving {
+                    Some((rel_idx, (eda, eta, trailer, qty))) => {
+                        (asn_index + rel_idx, eda.clone(), eta.clone(), trailer.clone(), *qty)
                     }
                     None => break,
                 };
@@ -567,6 +588,22 @@ pub async fn part_monitoring_service(
                     if burn > 0.0 {
                         running_bal = (running_bal - burn).max(0.0);
                     }
+                }
+
+                // running_bal is now what's on hand as this ASN lands. Under half
+                // the bank, the part is down to thin cover even though the ASN
+                // makes it in time, so the part and this ASN are flagged. The
+                // outage and margin reported are the ones this ASN rescues.
+                if asl.bank > 0 && running_bal < LOW_BANK_FRACTION * asl.bank as f64 {
+                    dispatch_alert(
+                        AlertParams { part, asl, level: LOW_BANK_LEVEL,
+                            hours_to_out: final_hours_to_out,
+                            next_asn_display: format!("{} {}", eda, eta),
+                            next_trailer: trailer,
+                            hours_until_rescue: (current_downtime_dt - arrival_dt).num_minutes() as f64 / 60.0,
+                            arrival_bal: Some(running_bal) },
+                        now, &alerted_parts, &mut alerts,
+                    ).await;
                 }
 
                 running_bal += qty;
@@ -594,13 +631,39 @@ pub async fn part_monitoring_service(
                         current_downtime_dt = window_start + chrono::Duration::hours(idx as i64);
                         final_hours_to_out = idx as f64 - current_hour_offset as f64;
 
-                        // Only alert if this ASN's rescue *didn't* push the outage out
-                        // far enough — if final_hours_to_out clears 6h, drop it entirely
-                        // rather than flagging a follow-up trailer that isn't actually
-                        // time-critical.
-                        if let Some(level) = classify(final_hours_to_out) {
-                            let (next_eda, next_eta, next_trailer) = asns_for_part
-                                .get(asn_index)
+                        // The ASNs still to come decide what this next outage is.
+                        let remaining = &asns_for_part[asn_index..];
+                        let next_asn = remaining.first();
+                        let rescue_margin: Option<f64> = next_asn
+                            .and_then(|(eda, eta, _, _)| parse_asn_arrival(eda, eta))
+                            .map(|arrival| (current_downtime_dt - arrival).num_minutes() as f64 / 60.0);
+
+                        // A gap behind the ASN just applied: nothing arrives ahead
+                        // of this outage, so it is as certain as a first outage
+                        // with no ASN in time, and is raised the same way — Shut
+                        // Down however far out it is, held back only while a load
+                        // shipped now would still make it (the transit gate above).
+                        // Without this the part showed the alert for the ASN that
+                        // saved it and nothing for the outage waiting behind it.
+                        let has_saving_asn = remaining.iter().any(|(eda, eta, _, _)| {
+                            parse_asn_arrival(eda, eta).is_some_and(|arrival| arrival < current_downtime_dt)
+                        });
+                        let time_to_ship = !has_saving_asn && transit_map.get(part)
+                            .is_some_and(|&transit| final_hours_to_out > TRANSIT_ALERT_FACTOR * transit);
+                        let gap_level = if has_saving_asn || time_to_ship {
+                            None
+                        } else if remaining.is_empty() {
+                            Some("Shut Down")
+                        } else {
+                            rescue_margin.and_then(classify)
+                        };
+
+                        // An outage an ASN does arrive ahead of is still only
+                        // raised once it is close (<=6h): past that it is dropped
+                        // rather than flagging a follow-up trailer that isn't
+                        // actually time-critical.
+                        if let Some(level) = worse_level(classify(final_hours_to_out), gap_level) {
+                            let (next_eda, next_eta, next_trailer) = next_asn
                                 .map(|(eda, eta, trailer, _)| (eda.clone(), eta.clone(), trailer.clone()))
                                 .unwrap_or_default();
                             let next_asn_display = if next_eda.is_empty() { "N/A".to_string() }
@@ -610,7 +673,10 @@ pub async fn part_monitoring_service(
                                 AlertParams { part, asl, level,
                                     hours_to_out: final_hours_to_out,
                                     next_asn_display, next_trailer,
-                                    hours_until_rescue: final_hours_to_out },
+                                    // Negative when the next ASN lands after the
+                                    // outage: the hours the part is out for
+                                    hours_until_rescue: rescue_margin.unwrap_or(0.0),
+                                    arrival_bal: None },
                                 now, &alerted_parts, &mut alerts,
                             ).await;
                         }

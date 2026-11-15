@@ -755,8 +755,12 @@ pub struct PartAlert {
     pub hours_to_out:       f64,
     pub next_asn_eta:       String,
     pub next_trailer:       String,
-    pub alert_level:        String, 
+    pub alert_level:        String,
     pub hours_until_rescue: f64,
+    /// Balance on hand as next_trailer lands. Only set on a "Below 50% Bank"
+    /// entry (services::LOW_BANK_LEVEL); null on the escalation levels.
+    #[serde(default)]
+    pub arrival_bal:        Option<f64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
