@@ -335,7 +335,7 @@ pub async fn ensure_indexes(graph: &neo4rs::Graph) {
 // every browser and tab the user has open gets the same ref and a reload in one
 // can't invalidate another. Past this size the map is rebuilt from scratch —
 // the refs then belong to trailers long rolled off the sheets.
-const MAX_EDIT_REFS_PER_USER: usize = 5000;
+pub const MAX_EDIT_REFS_PER_USER: usize = 5000;
 
 /** The user's ref for `uuid`, reusing the one already issued if there is one. */
 pub fn edit_ref_for(user_map: &mut HashMap<String, String>, uuid: &str) -> String {

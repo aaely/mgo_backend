@@ -22,6 +22,13 @@ data:
   # Must start with a leading dot. Leave unset if you ever do get a single
   # shared hostname for both Routes.
   COOKIE_DOMAIN: ".apps.your-cluster.com"           # ← placeholder, set your real .apps domain
+  # ── Redis (shared state between the app's pods, src/cluster.rs) ──
+  # The three sentinels from k8s/redis-statefulset.yaml; the app asks them which
+  # Redis node is the master. With these two unset the app runs as a single pod
+  # that shares nothing, which is only correct with replicas: 1.
+  # The password is REDIS_PASSWORD in mgo-backend-secret.
+  REDIS_SENTINELS: "redis-0.redis-headless:26379,redis-1.redis-headless:26379,redis-2.redis-headless:26379"
+  REDIS_MASTER_NAME: "mymaster"
   # ── Azure AD (Entra ID) SSO ──
   # App Registration values. None of these are secret — the client secret lives
   # in mgo-backend-secret. AZURE_REDIRECT_URI must match the Redirect URI

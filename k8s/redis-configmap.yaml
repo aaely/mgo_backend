@@ -1,0 +1,148 @@
+# Start-up scripts for the Redis pods (k8s/redis-statefulset.yaml). Each pod runs
+# two containers: a Redis node and a sentinel. The three sentinels watch the
+# master and promote a replica if it goes away.
+#
+# Nothing here is tuned for durability: Redis holds only what the app can do
+# without (editRefs, the last part alert list, which pod runs the background
+# services), so there is no persistence and no volume claim. See src/cluster.rs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-scripts
+  namespace: 7372268-test          # ← your namespace
+data:
+  # Shared by both scripts: how a starting container finds the current master.
+  common.sh: |
+    HEADLESS=redis-headless
+    ME="$HOSTNAME.$HEADLESS"
+    PEERS="redis-0 redis-1 redis-2"
+    export REDISCLI_AUTH="$REDIS_PASSWORD"
+
+    # Only this cluster's own pod names are taken as an answer, so an error
+    # message on stdout can never end up in a config file.
+    pod_name() {
+      case "$1" in
+        redis-[0-9]."$HEADLESS") echo "$1" ;;
+      esac
+    }
+
+    # The master according to the sentinels in the other pods; blank if none answers.
+    master_from_sentinels() {
+      for peer in $PEERS; do
+        [ "$peer" = "$HOSTNAME" ] && continue
+        found="$(timeout 3 redis-cli -h "$peer.$HEADLESS" -p 26379 sentinel get-master-addr-by-name mymaster 2>/dev/null | head -n 1)" || true
+        found="$(pod_name "$found")"
+        if [ -n "$found" ]; then echo "$found"; return 0; fi
+      done
+      return 0
+    }
+
+    # A Redis node that says it is a master; blank if there is none.
+    # $1 = "others" to leave this pod's own node out.
+    master_from_nodes() {
+      for peer in $PEERS; do
+        [ "$1" = "others" ] && [ "$peer" = "$HOSTNAME" ] && continue
+        role="$(timeout 3 redis-cli -h "$peer.$HEADLESS" -p 6379 role 2>/dev/null | head -n 1)" || true
+        if [ "$role" = "master" ]; then echo "$peer.$HEADLESS"; return 0; fi
+      done
+      return 0
+    }
+
+  redis-start.sh: |
+    #!/bin/sh
+    # Starts this pod's Redis as a replica of the current master, or as the
+    # master when there is none.
+    set -eu
+    . /scripts/common.sh
+
+    MASTER=""
+    waited=0
+    while :; do
+      MASTER="$(master_from_sentinels)"
+      [ "$MASTER" != "$ME" ] && break
+      # The sentinels still name this pod as the master, but it has just started
+      # and is empty. Starting now would make every replica copy that emptiness.
+      # Give the sentinels time to promote a replica that has the data. If they
+      # haven't after 30s, nothing else is alive to promote, and this pod
+      # carries on as the master.
+      [ "$waited" -ge 30 ] && break
+      echo "sentinels still name $ME as master; waiting for them to fail over (${waited}s)"
+      sleep 2
+      waited=$((waited + 2))
+    done
+    [ -z "$MASTER" ] && MASTER="$(master_from_nodes others)"
+    # Nothing is running yet: redis-0 starts the cluster off as the master
+    [ -z "$MASTER" ] && MASTER="redis-0.$HEADLESS"
+
+    cat > /data/redis.conf <<EOF
+    port 6379
+    bind * -::*
+    dir /data
+    # No snapshots and no append-only file: nothing in here needs to survive
+    save ""
+    appendonly no
+    requirepass "$REDIS_PASSWORD"
+    masterauth "$REDIS_PASSWORD"
+    # Announce the pod's stable DNS name, not its IP, which changes on every restart
+    replica-announce-ip $ME
+    replica-announce-port 6379
+    maxmemory 256mb
+    # Under memory pressure, drop the oldest editRefs (they expire anyway) rather than refuse writes
+    maxmemory-policy volatile-lru
+    tcp-keepalive 60
+    EOF
+
+    if [ "$MASTER" = "$ME" ]; then
+      echo "starting $ME as the master"
+    else
+      echo "starting $ME as a replica of $MASTER"
+      echo "replicaof $MASTER 6379" >> /data/redis.conf
+    fi
+    exec redis-server /data/redis.conf
+
+  sentinel-start.sh: |
+    #!/bin/sh
+    # Starts this pod's sentinel, pointed at the current master.
+    set -eu
+    . /scripts/common.sh
+
+    # A sentinel refuses to start while it can't resolve and reach its master,
+    # so wait for one that answers, looking again each time round in case a
+    # failover moved it.
+    while :; do
+      MASTER="$(master_from_sentinels)"
+      [ -z "$MASTER" ] && MASTER="$(master_from_nodes all)"
+      [ -z "$MASTER" ] && MASTER="redis-0.$HEADLESS"
+      if [ "$(timeout 3 redis-cli -h "$MASTER" -p 6379 ping 2>/dev/null)" = "PONG" ]; then
+        break
+      fi
+      echo "waiting for the master ($MASTER) to answer"
+      sleep 2
+    done
+
+    # The same id every time this pod starts. With a random one, each restart
+    # would leave a dead sentinel on the others' lists, and enough of those
+    # stop a failover from ever getting a majority.
+    MYID="$(printf '%s' "$HOSTNAME" | sha1sum | cut -c1-40)"
+
+    cat > /data/sentinel.conf <<EOF
+    port 26379
+    bind * -::*
+    dir /data
+    requirepass "$REDIS_PASSWORD"
+    sentinel sentinel-pass "$REDIS_PASSWORD"
+    sentinel myid $MYID
+    sentinel resolve-hostnames yes
+    sentinel announce-hostnames yes
+    sentinel announce-ip $ME
+    sentinel announce-port 26379
+    # 2 = how many sentinels have to agree the master is down
+    sentinel monitor mymaster $MASTER 6379 2
+    sentinel auth-pass mymaster "$REDIS_PASSWORD"
+    sentinel down-after-milliseconds mymaster 5000
+    sentinel failover-timeout mymaster 30000
+    sentinel parallel-syncs mymaster 1
+    EOF
+
+    echo "starting the sentinel on $ME, watching $MASTER"
+    exec redis-sentinel /data/sentinel.conf

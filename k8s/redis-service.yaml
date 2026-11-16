@@ -1,0 +1,24 @@
+# Gives each Redis pod a DNS name that survives restarts:
+#   redis-0.redis-headless, redis-1.redis-headless, redis-2.redis-headless
+# The nodes, the sentinels and the app (REDIS_SENTINELS in configmap.yaml) all
+# address each other by these. Headless: no load-balanced cluster IP, because a
+# client has to reach one particular pod (the master, or one given sentinel).
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-headless
+  namespace: 7372268-test          # ← your namespace
+spec:
+  clusterIP: None
+  # Names resolve as soon as a pod has an IP, not only once it is Ready: a
+  # starting pod has to find the others before it can become Ready itself.
+  publishNotReadyAddresses: true
+  selector:
+    app: redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+    - name: sentinel
+      port: 26379
+      targetPort: 26379

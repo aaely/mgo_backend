@@ -1,0 +1,12 @@
+# Keeps node drains and cluster upgrades from taking down more than one Redis pod
+# at a time. With two of the three gone the sentinels can't agree on a failover.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: redis
+  namespace: 7372268-test          # ← your namespace
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: redis

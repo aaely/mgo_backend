@@ -424,8 +424,9 @@ pub struct AppState {
     pub ws_list: WebSocketList,
     pub ws_topics: WsTopics,
     pub alerted_parts: Arc<Mutex<HashMap<String, chrono::DateTime<chrono_tz::Tz>>>>,
-    pub edit_refs: Arc<Mutex<HashMap<String, HashMap<String, String>>>>,
-    pub current_alerts: Arc<Mutex<Vec<PartAlert>>>,
+    /// Everything that has to be the same on every pod: websocket broadcasts,
+    /// editRefs, the part alert list, and which pod runs the background services.
+    pub cluster: Arc<crate::cluster::Cluster>,
     pub use_https: bool,
 }
 

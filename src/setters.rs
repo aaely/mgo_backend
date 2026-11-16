@@ -1,9 +1,9 @@
 use crate::structs::*;
-use crate::helpers::{build_update_query, edit_ref_for, get_requested_fields, lowest_doh_deck, post_slack_message, recently_delivered, trailer_field};
+use crate::helpers::{build_update_query, get_requested_fields, lowest_doh_deck, post_slack_message, recently_delivered, trailer_field};
+use crate::cluster::Audience;
 use crate::permissions;
 use crate::auth::{AuthenticatedUser, AdminOrManager, AdminOnly, AdminOrSupervisor};
 use crate::role::Role;
-use tokio_tungstenite::tungstenite::Message;
 use rocket::{State, delete, post, http::Status, serde::json::Json};
 use neo4rs::{query, Node};
 use crate::route_blackouts::find_blackout;
@@ -1702,16 +1702,7 @@ pub async fn roll_next_shift(
     // trailer_update/add_on messages don't apply. Signal only — clients pull
     // from get_live_trailers, which already scopes V/U docks by role, rather
     // than us partitioning a bulk payload per role and risking a leak.
-    let ws_msg = IncomingMessage {
-        r#type: "shift_rolled".to_string(),
-        data:   None,
-    };
-    if let Ok(message) = serde_json::to_string(&ws_msg) {
-        let ws_list = state.ws_list.lock().await;
-        for crate::structs::WsClient { tx, .. } in ws_list.values() {
-            let _ = tx.send(Message::Text(message.clone()));
-        }
-    }
+    state.cluster.broadcast_message(Audience::everyone(), "shift_rolled", None).await;
 
     Ok(Json("Roll next shift completed successfully"))
 }
@@ -1915,48 +1906,23 @@ async fn create_add_on(
                 // editRefs are per-user, so a shared payload could only go out
                 // without one, and everyone but the creator then had a row they
                 // couldn't save until a reload fetched its ref. Each socket gets
-                // the row stamped with its user's ref from the same map
+                // the row stamped with its user's ref from the same store
                 // get_live_trailers / get_staged_trailers issue from, so the ref
                 // matches the one a later fetch would hand out. The live and
                 // next-shift boards share one client-side list, so this goes only
-                // to the clients showing the board it belongs to.
-                //
-                // Recipients are collected first and the socket locks released
-                // before edit_refs is taken, so no two of these locks are ever held
-                // together.
-                let recipients: Vec<(tokio::sync::mpsc::UnboundedSender<Message>, String)> = {
-                    let ws_list = state.ws_list.lock().await;
-                    let topics  = state.ws_topics.lock().await;
-                    ws_list.iter()
-                        // VAA and Universal only hear about their own dock
-                        .filter(|(_, c)| permissions::dock_allowed(&c.role, &created.dockCode))
-                        .filter(|(addr, _)| topics.get(*addr).is_some_and(|t| t.contains(target.topic)))
-                        .map(|(_, c)| (c.tx.clone(), c.username.clone()))
-                        .collect()
-                };
+                // to the clients showing the board it belongs to, and VAA and
+                // Universal only hear about their own dock.
+                state.cluster.broadcast_add_on(
+                    Audience::topic(target.topic).and_dock(&created.dockCode),
+                    target.ws_type,
+                    &created,
+                ).await;
 
-                let creator_edit_ref = {
-                    let mut edit_refs = state.edit_refs.lock().await;
-
-                    for (tx, recipient) in recipients.iter() {
-                        let user_map = edit_refs.entry(recipient.clone()).or_insert_with(HashMap::new);
-                        let stamped = TrailerRecord { editRef: edit_ref_for(user_map, &created.uuid), ..created.clone() };
-                        let Ok(data) = serde_json::to_string(&stamped) else { continue };
-                        let ws_msg = IncomingMessage {
-                            r#type: target.ws_type.to_string(),
-                            data: Some(MessageData { message: data }),
-                        };
-                        if let Ok(message) = serde_json::to_string(&ws_msg) {
-                            let _ = tx.send(Message::Text(message));
-                        }
-                    }
-
-                    // ── The creator's ref, returned so they can update immediately ──
-                    let user_map = edit_refs
-                        .entry(username.to_string())
-                        .or_insert_with(HashMap::new);
-                    edit_ref_for(user_map, &created.uuid)
-                };
+                // ── The creator's ref, returned so they can update immediately ──
+                let creator_edit_ref = state.cluster
+                    .edit_refs_for(username, std::slice::from_ref(&created.uuid)).await
+                    .pop()
+                    .unwrap_or_default();
 
                 // ── Audit trail: single entry for the add-on ──
                 let audit_timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -2313,13 +2279,8 @@ pub async fn update_live_trailer(
 
     // Resolve editRef → real uuid from the per-user session map
     let user_edit_ref = trailer.editRef.clone();
-    let uuid = {
-        let edit_refs = state.edit_refs.lock().await;
-        edit_refs
-            .get(&user.0.username)
-            .and_then(|m| m.get(&user_edit_ref))
-            .cloned()
-    }.ok_or((Status::Conflict, Json("This sheet is out of date. Reload the page and try again.".to_string())))?;
+    let uuid = state.cluster.resolve_edit_ref(&user.0.username, &user_edit_ref).await
+        .ok_or((Status::Conflict, Json("This sheet is out of date. Reload the page and try again.".to_string())))?;
 
     trailer.uuid = uuid;
 
@@ -2427,19 +2388,11 @@ pub async fn update_live_trailer(
                     receivedTime:    node.get("receivedTime").unwrap_or_default(),
                 };
                 // ── Broadcast without editRef (per-user, not shareable) ──
+                // VAA and Universal only hear about their own dock
                 if let Ok(data) = serde_json::to_value(&updated) {
-                    let ws_msg = IncomingMessage {
-                        r#type: "trailer_update".to_string(),
-                        data: Some(MessageData { message: data.to_string() }),
-                    };
-                    if let Ok(message) = serde_json::to_string(&ws_msg) {
-                        let ws_list = state.ws_list.lock().await;
-                        for crate::structs::WsClient { tx, role, .. } in ws_list.values() {
-                            // VAA and Universal only hear about their own dock
-                            if !permissions::dock_allowed(role, &updated.dockCode) { continue; }
-                            let _ = tx.send(Message::Text(message.clone()));
-                        }
-                    }
+                    state.cluster
+                        .broadcast_message(Audience::dock(&updated.dockCode), "trailer_update", Some(data.to_string()))
+                        .await;
                 }
                 // ── Audit trail: log field changes linked to current OpDate ──
                 let audit_timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();

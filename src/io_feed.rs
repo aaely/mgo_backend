@@ -20,8 +20,8 @@
 //! Only subscribers get them, and never the vaa/univ roles, which get_io refuses.
 
 use crate::getters::read_io;
-use crate::structs::{AppState, DyCommLogEntry, ExceptionLogEntry, IncomingMessage, MessageData};
-use tokio_tungstenite::tungstenite::Message;
+use crate::cluster::Audience;
+use crate::structs::{AppState, DyCommLogEntry, ExceptionLogEntry};
 
 pub const TOPIC_IO: &str = "io";
 
@@ -47,19 +47,9 @@ pub const WS_IO_FEED_TYPES: &[&str] = &[
 
 /// Sends `message_type` to every subscriber of the io topic whose role may see IO.
 async fn send(state: &AppState, message_type: &str, payload: Option<String>) {
-    let ws_msg = IncomingMessage {
-        r#type: message_type.to_string(),
-        data:   payload.map(|message| MessageData { message }),
-    };
-    let Ok(text) = serde_json::to_string(&ws_msg) else { return };
-
-    let ws_list = state.ws_list.lock().await;
-    let topics  = state.ws_topics.lock().await;
-    for (addr, crate::structs::WsClient { tx, role, .. }) in ws_list.iter() {
-        if !topics.get(addr).is_some_and(|t| t.contains(TOPIC_IO)) { continue }
-        if role.contains("vaa") || role.contains("univ") { continue }
-        let _ = tx.send(Message::Text(text.clone()));
-    }
+    state.cluster
+        .broadcast_message(Audience::topic(TOPIC_IO).onsite_only(), message_type, payload)
+        .await;
 }
 
 /// Pushes `trailer` as it now stands — or its removal, when it no longer shows on

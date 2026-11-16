@@ -15,12 +15,12 @@
 //! reads as all four of that hour's windows until the route is next saved.
 
 use crate::auth::{AdminOnly, AuthenticatedUser};
-use crate::structs::{AppState, IncomingMessage, MessageData};
+use crate::cluster::Audience;
+use crate::structs::AppState;
 use neo4rs::{query, Graph};
 use rocket::{get, http::Status, post, serde::json::Json, State};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
-use tokio_tungstenite::tungstenite::Message;
 
 type ApiError = (Status, Json<String>);
 
@@ -154,16 +154,7 @@ pub async fn set_route_blackouts(
 
     // ── Push to every open screen, whatever page or topic it's on ──
     if let Ok(payload) = serde_json::to_string(&clean) {
-        let ws_msg = IncomingMessage {
-            r#type: WS_ROUTE_BLACKOUTS.to_string(),
-            data:   Some(MessageData { message: payload }),
-        };
-        if let Ok(message) = serde_json::to_string(&ws_msg) {
-            let ws_list = state.ws_list.lock().await;
-            for crate::structs::WsClient { tx, .. } in ws_list.values() {
-                let _ = tx.send(Message::Text(message.clone()));
-            }
-        }
+        state.cluster.broadcast_message(Audience::everyone(), WS_ROUTE_BLACKOUTS, Some(payload)).await;
     }
 
     Ok(Json(clean))

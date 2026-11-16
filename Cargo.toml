@@ -26,3 +26,6 @@ url = "2.2"
 reqwest = { version = "0.11", features = ["json"] }
 dotenvy = "0.15.7"
 uuid = { version = "1", features = ["v4"] }
+# Shared state between pods (src/cluster.rs). Unused at runtime unless
+# REDIS_SENTINELS or REDIS_URL is set.
+redis = { version = "1.8", default-features = false, features = ["tokio-comp", "sentinel", "script"] }

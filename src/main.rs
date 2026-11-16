@@ -20,6 +20,7 @@ mod io_feed;
 mod route_spacing;
 mod part_comments;
 mod exception_agent;
+mod cluster;
 use rocket::data::ToByteUnit;
 use rocket::{get, routes};
 use rocket::fs::{FileServer, NamedFile};
@@ -61,14 +62,17 @@ impl AppState {
 
         let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
 
+        let ws_list:   structs::WebSocketList = Arc::new(Mutex::new(HashMap::new()));
+        let ws_topics: structs::WsTopics      = Arc::new(Mutex::new(HashMap::new()));
+        let cluster = cluster::Cluster::start(ws_list.clone(), ws_topics.clone());
+
         AppState {
-            ws_list: Arc::new(Mutex::new(HashMap::new())),
-            ws_topics: Arc::new(Mutex::new(HashMap::new())),
+            ws_list,
+            ws_topics,
             graph: Arc::new(graph),
             jwt_secret,
             alerted_parts: Arc::new(Mutex::new(HashMap::new())),
-            edit_refs:     Arc::new(Mutex::new(HashMap::new())),
-            current_alerts: Arc::new(Mutex::new(Vec::new())),
+            cluster,
             use_https,
         }
     }
@@ -115,33 +119,37 @@ async fn main() {
             let ws_graph    = state.graph.clone();
             let use_https   = state.use_https;
 
-            // WebSocket server
+            // WebSocket server. Every pod runs its own: sockets belong to the pod
+            // they connected to.
+            let ws_cluster = state.cluster.clone();
             tokio::spawn(async move {
-                if let Err(e) = run_ws_server(ws_list.clone(), ws_topics, jwt_secret, ws_graph, use_https).await {
+                if let Err(e) = run_ws_server(ws_list.clone(), ws_topics, ws_cluster, jwt_secret, ws_graph, use_https).await {
                     println!("Error in WebSocket server: {}", e);
                 }
             });
 
+            // The three services below are started on every pod but only do
+            // their work on the active one (cluster::Cluster::next_run); the
+            // standby's copies wait to take over.
+
             // Late trailer service
-            let ws_list2 = state.ws_list.clone();
+            let cluster2 = state.cluster.clone();
             tokio::spawn(async move {
-                late_trailer_service(graph, ws_list2).await;
+                late_trailer_service(graph, cluster2).await;
             });
 
             let graph3  = state.graph.clone();
-            let ws_list3 = state.ws_list.clone();
-            let ws_topics3 = state.ws_topics.clone();
+            let cluster3 = state.cluster.clone();
             let alerted = state.alerted_parts.clone();
-            let current_alerts = state.current_alerts.clone();
             tokio::spawn(async move {
-                part_monitoring_service(graph3, ws_list3, ws_topics3, alerted, current_alerts).await;
+                part_monitoring_service(graph3, cluster3, alerted).await;
             });
 
             // LMS exception comments -> agent -> Traffic Comments (off without EXCEPTION_AGENT_URL)
             let graph4   = state.graph.clone();
-            let ws_list4 = state.ws_list.clone();
+            let cluster4 = state.cluster.clone();
             tokio::spawn(async move {
-                exception_agent::exception_agent_service(graph4, ws_list4).await;
+                exception_agent::exception_agent_service(graph4, cluster4).await;
             });
         })))
         .mount("/", FileServer::from("dist"))

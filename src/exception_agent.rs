@@ -37,9 +37,9 @@ use neo4rs::{query, Graph, Node};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::time::MissedTickBehavior;
-use tokio_tungstenite::tungstenite::Message;
 
-use crate::structs::{IncomingMessage, MessageData, TrailerRecord, WebSocketList, WsClient};
+use crate::cluster::{Audience, Cluster};
+use crate::structs::TrailerRecord;
 
 const RUN_EVERY: Duration = Duration::from_secs(5 * 60);
 const AGENT_TIMEOUT: Duration = Duration::from_secs(90);
@@ -101,7 +101,7 @@ fn join_date_time(date: &str, time: &str) -> Option<String> {
     }
 }
 
-pub async fn exception_agent_service(graph: Arc<Graph>, ws_list: WebSocketList) {
+pub async fn exception_agent_service(graph: Arc<Graph>, cluster: Arc<Cluster>) {
     let url = match std::env::var("EXCEPTION_AGENT_URL").ok().and_then(|u| non_blank(&u)) {
         Some(u) => u,
         None => {
@@ -120,7 +120,9 @@ pub async fn exception_agent_service(graph: Arc<Graph>, ws_list: WebSocketList) 
     // rather than firing the missed ticks back to back
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
-        interval.tick().await;
+        // Runs on the active pod only, so each comment goes to the agent once;
+        // on the standby this waits to take over
+        cluster.next_run(&mut interval).await;
         let pending = match collect_pending(&graph).await {
             Ok(p) => p,
             Err(e) => { eprintln!("Exception agent service error: {e}"); continue; }
@@ -132,8 +134,8 @@ pub async fn exception_agent_service(graph: Arc<Graph>, ws_list: WebSocketList) 
 
         stream::iter(pending)
             .for_each_concurrent(AGENT_CONCURRENCY, |p| {
-                let (graph, ws_list, client, url, auth) = (&graph, &ws_list, &client, &url, auth.as_deref());
-                async move { process(graph, ws_list, client, url, auth, p).await }
+                let (graph, cluster, client, url, auth) = (&graph, &cluster, &client, &url, auth.as_deref());
+                async move { process(graph, cluster, client, url, auth, p).await }
             })
             .await;
     }
@@ -214,7 +216,7 @@ async fn collect_pending(graph: &Graph) -> Result<Vec<Pending>, String> {
 
 async fn process(
     graph:   &Graph,
-    ws_list: &WebSocketList,
+    cluster: &Cluster,
     client:  &reqwest::Client,
     url:     &str,
     auth:    Option<&str>,
@@ -266,7 +268,7 @@ async fn process(
     match written.next().await {
         Ok(Some(row)) => {
             if let Ok(node) = row.get::<Node>("t") {
-                broadcast_trailer(ws_list, &crate::helpers::trailer_from_node(&node)).await;
+                broadcast_trailer(cluster, &crate::helpers::trailer_from_node(&node)).await;
             }
         }
         // Rolled off, or a traffic comment was typed in the meantime
@@ -328,15 +330,9 @@ fn extract_result(text: &str) -> Option<Value> {
 /// The trailer_update both boards already take (the live sheet and next shift
 /// share the trailer list, matched by uuid). VAA and Universal only hear about
 /// their own dock. The client keeps its own editRef for the row.
-async fn broadcast_trailer(ws_list: &WebSocketList, trailer: &TrailerRecord) {
+async fn broadcast_trailer(cluster: &Cluster, trailer: &TrailerRecord) {
     let Ok(data) = serde_json::to_string(trailer) else { return };
-    let msg = IncomingMessage { r#type: "trailer_update".to_string(), data: Some(MessageData { message: data }) };
-    let Ok(text) = serde_json::to_string(&msg) else { return };
-    let list = ws_list.lock().await;
-    for WsClient { tx, role, .. } in list.values() {
-        if !crate::permissions::dock_allowed(role, &trailer.dockCode) { continue; }
-        let _ = tx.send(Message::Text(text.clone()));
-    }
+    cluster.broadcast_message(Audience::dock(&trailer.dockCode), "trailer_update", Some(data)).await;
 }
 
 #[cfg(test)]

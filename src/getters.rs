@@ -883,12 +883,10 @@ pub async fn get_live_trailers(
             // cleared: the same user may have the sheet open in another browser,
             // and clearing here made that one's saves fail as "out of date".
             {
-                let mut edit_refs = state.edit_refs.lock().await;
-                let user_map = edit_refs
-                    .entry(user.0.username.clone())
-                    .or_insert_with(HashMap::new);
-                for record in &mut records {
-                    record.editRef = edit_ref_for(user_map, &record.uuid);
+                let uuids: Vec<String> = records.iter().map(|r| r.uuid.clone()).collect();
+                let edit_refs = state.cluster.edit_refs_for(&user.0.username, &uuids).await;
+                for (record, edit_ref) in records.iter_mut().zip(edit_refs) {
+                    record.editRef = edit_ref;
                 }
             }
 
@@ -980,12 +978,10 @@ pub async fn get_staged_trailers(
             // their own. Add to the user's map rather than replacing it — the live
             // sheet may be open in another tab and its refs must stay valid.
             {
-                let mut edit_refs = state.edit_refs.lock().await;
-                let user_map = edit_refs
-                    .entry(user.0.username.clone())
-                    .or_insert_with(HashMap::new);
-                for record in &mut records {
-                    record.editRef = edit_ref_for(user_map, &record.uuid);
+                let uuids: Vec<String> = records.iter().map(|r| r.uuid.clone()).collect();
+                let edit_refs = state.cluster.edit_refs_for(&user.0.username, &uuids).await;
+                for (record, edit_ref) in records.iter_mut().zip(edit_refs) {
+                    record.editRef = edit_ref;
                 }
             }
 
@@ -1799,7 +1795,7 @@ pub async fn get_part_alerts(
     state: &State<AppState>,
     _user: AuthenticatedUser,
 ) -> Json<Vec<PartAlert>> {
-    Json(state.current_alerts.lock().await.clone())
+    Json(state.cluster.part_alerts().await)
 }
 
 #[get("/api/get_contacts")]

@@ -10,12 +10,12 @@
 //! values until the first save, so a fresh environment behaves as before.
 
 use crate::auth::{AdminOnly, AuthenticatedUser};
-use crate::structs::{AppState, IncomingMessage, MessageData};
+use crate::cluster::Audience;
+use crate::structs::AppState;
 use neo4rs::query;
 use rocket::{get, http::Status, post, serde::json::Json, State};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use tokio_tungstenite::tungstenite::Message;
 
 /// Websocket type carrying a saved configuration to every client. Server-sent
 /// only — wsserver refuses to relay it from a client.
@@ -166,16 +166,7 @@ pub async fn set_dock_capacity(
             // ── Push it to every open screen, whatever page or topic it's on.
             //    Capacity isn't dock-scoped data, so VAA/Universal users get it too. ──
             if let Ok(payload) = serde_json::to_string(&data) {
-                let ws_msg = IncomingMessage {
-                    r#type: WS_DOCK_CAPACITY.to_string(),
-                    data:   Some(MessageData { message: payload }),
-                };
-                if let Ok(message) = serde_json::to_string(&ws_msg) {
-                    let ws_list = state.ws_list.lock().await;
-                    for crate::structs::WsClient { tx, .. } in ws_list.values() {
-                        let _ = tx.send(Message::Text(message.clone()));
-                    }
-                }
+                state.cluster.broadcast_message(Audience::everyone(), WS_DOCK_CAPACITY, Some(payload)).await;
             }
 
             Ok(Json(data))

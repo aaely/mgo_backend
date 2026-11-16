@@ -1,0 +1,177 @@
+# Redis for the app's shared state (src/cluster.rs): three pods, each a Redis node
+# plus a sentinel. One node is the master, two are replicas. Three is the minimum
+# for an automatic failover: two sentinels have to agree the master is gone and a
+# majority of the three has to approve the promotion, so one pod can be lost.
+#
+# A StatefulSet, not a Deployment, for the stable pod names (redis-0, redis-1,
+# redis-2): every node and sentinel is addressed as redis-N.redis-headless, which
+# stays the same when a pod is replaced and its IP changes.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: 7372268-test          # ← your namespace
+spec:
+  serviceName: redis-headless
+  replicas: 3   # the scripts in redis-configmap.yaml name redis-0..2; change both together
+  # All three at once. In order (the default) a redis-0 that can't start would
+  # keep the other two from starting at all.
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      # Spread over nodes where possible, so one node going down takes one pod
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app: redis
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: redis
+          # 7.2 is the last BSD-licensed Redis line. valkey/valkey:8-alpine is the
+          # maintained BSD fork; to use it, swap the image and replace redis-server /
+          # redis-sentinel / redis-cli with valkey-server / valkey-sentinel /
+          # valkey-cli in redis-configmap.yaml and the probes below.
+          image: redis:7.2-alpine
+          command: ["sh", "/scripts/redis-start.sh"]
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: REDIS_PASSWORD
+            # Read by redis-cli in the probes and the preStop hook
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: REDIS_PASSWORD
+          ports:
+            - name: redis
+              containerPort: 6379
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: redis-data
+              mountPath: /data
+          lifecycle:
+            preStop:
+              exec:
+                # If this node is the master, hand over before it stops, so a
+                # rollout or node drain doesn't wait on the sentinels noticing.
+                # Returns as soon as the sentinels name another node (10s at most).
+                command:
+                  - sh
+                  - -c
+                  - |
+                    if [ "$(redis-cli -p 6379 role | head -n 1)" = "master" ]; then
+                      redis-cli -p 26379 sentinel failover mymaster || exit 0
+                      i=0
+                      while [ "$i" -lt 10 ]; do
+                        now="$(redis-cli -p 26379 sentinel get-master-addr-by-name mymaster | head -n 1)"
+                        [ "$now" != "$HOSTNAME.redis-headless" ] && break
+                        sleep 1
+                        i=$((i + 1))
+                      done
+                    fi
+          # The start script may wait up to 30s for a failover before Redis is up
+          startupProbe:
+            exec:
+              command: ["redis-cli", "-p", "6379", "ping"]
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "-p", "6379", "ping"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "-p", "6379", "ping"]
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+
+        - name: sentinel
+          image: redis:7.2-alpine
+          command: ["sh", "/scripts/sentinel-start.sh"]
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: REDIS_PASSWORD
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: REDIS_PASSWORD
+          ports:
+            - name: sentinel
+              containerPort: 26379
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: sentinel-data
+              mountPath: /data
+          # The start script waits here until a master answers
+          startupProbe:
+            exec:
+              command: ["redis-cli", "-p", "26379", "ping"]
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 150
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "-p", "26379", "ping"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "-p", "26379", "ping"]
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+      volumes:
+        - name: scripts
+          configMap:
+            name: redis-scripts
+        # Scratch space only (the generated config, and a replica's copy of the
+        # data while it syncs). Emptied whenever the pod is replaced.
+        - name: redis-data
+          emptyDir: {}
+        - name: sentinel-data
+          emptyDir: {}

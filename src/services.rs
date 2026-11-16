@@ -1,11 +1,11 @@
 use crate::structs::*;
+use crate::cluster::{Audience, Cluster};
 // send_sms and post_slack_message are only used by the part alert notifications,
 // commented out in dispatch_alert; add them back here when those are reactivated.
 use crate::helpers::{send_email, /* send_sms, post_slack_message, */ parse_asn_arrival};
 use neo4rs::{query, Node, Graph};
 use chrono::Datelike;
 use tokio::sync::Mutex;
-use tokio_tungstenite::tungstenite::Message;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -24,11 +24,12 @@ const LOW_BANK_FRACTION: f64 = 0.5;
 /// Alerts page lists it after the escalation levels.
 const LOW_BANK_LEVEL: &str = "Below 50% Bank";
 
-pub async fn late_trailer_service(graph: Arc<Graph>, ws_list: WebSocketList) {
+pub async fn late_trailer_service(graph: Arc<Graph>, cluster: Arc<Cluster>) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
 
     loop {
-        interval.tick().await;
+        // Runs on the active pod only; on the standby this waits to take over
+        cluster.next_run(&mut interval).await;
         println!("Running late trailer service...");
         let now = crate::helpers::now_central();
         let fifteen_mins_ago = now - chrono::Duration::minutes(12);
@@ -93,20 +94,12 @@ pub async fn late_trailer_service(graph: Arc<Graph>, ws_list: WebSocketList) {
                             receivedTime:    node.get("receivedTime").unwrap_or_default(),
                         };
 
+                        // VAA and Universal only hear about their own dock,
+                        // as update_live_trailer's trailer_update does
                         if let Ok(data) = serde_json::to_string(&updated) {
-                            let ws_msg = IncomingMessage {
-                                r#type: "trailer_update".to_string(),
-                                data: Some(MessageData { message: data }),
-                            };
-                            if let Ok(message) = serde_json::to_string(&ws_msg) {
-                                let ws_list = ws_list.lock().await;
-                                for crate::structs::WsClient { tx, role, .. } in ws_list.values() {
-                                    // VAA and Universal only hear about their own dock,
-                                    // as update_live_trailer's trailer_update does
-                                    if !crate::permissions::dock_allowed(role, &updated.dockCode) { continue; }
-                                    let _ = tx.send(Message::Text(message.clone()));
-                                }
-                            }
+                            cluster
+                                .broadcast_message(Audience::dock(&updated.dockCode), "trailer_update", Some(data))
+                                .await;
                         }
 
                         if let Ok(alert_email) = std::env::var("ALERT_EMAIL") {
@@ -255,15 +248,14 @@ async fn dispatch_alert(
 
 pub async fn part_monitoring_service(
     graph: Arc<Graph>,
-    ws_list: WebSocketList,
-    ws_topics: WsTopics,
+    cluster: Arc<Cluster>,
     alerted_parts: Arc<Mutex<HashMap<String, chrono::DateTime<chrono_tz::Tz>>>>,
-    current_alerts: Arc<Mutex<Vec<PartAlert>>>,
 ) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60 * 15));
 
     loop {
-        interval.tick().await;
+        // Runs on the active pod only; on the standby this waits to take over
+        cluster.next_run(&mut interval).await;
 
         let asl_query = query("MATCH (n:PartASL) WHERE n.cbal > 0
                                       AND n.deck <> 'TT'
@@ -685,32 +677,20 @@ pub async fn part_monitoring_service(
             }
         }
 
-        *current_alerts.lock().await = alerts.clone();
+        // Kept where every pod can read it: get_part_alerts is answered by
+        // whichever pod takes the request, and only this one ran the service
+        cluster.set_part_alerts(&alerts).await;
 
         if alerts.is_empty() {
             continue;
         }
 
+        // Only the clients showing the Part Alerts page want this feed, so it
+        // goes to the sockets subscribed to the topic and no others.
         if let Ok(data) = serde_json::to_string(&alerts) {
-            let ws_msg = IncomingMessage {
-                r#type: "part_alert".to_string(),
-                data:   Some(MessageData { message: data }),
-            };
-            if let Ok(message) = serde_json::to_string(&ws_msg) {
-                // Only the clients showing the Part Alerts page want this feed, so
-                // skip every socket that has not subscribed to the topic.
-                let ws_list = ws_list.lock().await;
-                let topics  = ws_topics.lock().await;
-                for (addr, crate::structs::WsClient { tx, .. }) in ws_list.iter() {
-                    let subscribed = topics
-                        .get(addr)
-                        .is_some_and(|t| t.contains(TOPIC_PART_ALERTS));
-                    if !subscribed {
-                        continue;
-                    }
-                    let _ = tx.send(Message::Text(message.clone()));
-                }
-            }
+            cluster
+                .broadcast_message(Audience::topic(TOPIC_PART_ALERTS), "part_alert", Some(data))
+                .await;
         }
     }
 }

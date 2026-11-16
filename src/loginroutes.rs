@@ -175,7 +175,7 @@ pub async fn logout(
 
         if let Ok(Some(row)) = result.next().await {
             if let Ok(username) = row.get::<String>("username") {
-                state.edit_refs.lock().await.remove(&username);
+                state.cluster.clear_edit_refs(&username).await;
             }
         }
     }

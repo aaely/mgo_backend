@@ -7,7 +7,6 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_tungstenite::{
     accept_hdr_async, WebSocketStream,
     tungstenite::{
-        protocol::Message,
         http::StatusCode,
         handshake::server::{Request as WsRequest, Response as WsResponse},
     },
@@ -16,6 +15,7 @@ use native_tls::{Identity, TlsAcceptor};
 use tokio_native_tls::TlsAcceptor as AsyncTlsAcceptor;
 use neo4rs::Graph;
 use crate::auth::{decode_token, Claims};
+use crate::cluster::{Audience, Cluster};
 use crate::structs::{AppState, IncomingMessage, WebSocketList, WsClient, WsTopics};
 use crate::dock_capacity::WS_DOCK_CAPACITY;
 use crate::route_blackouts::WS_ROUTE_BLACKOUTS;
@@ -26,11 +26,12 @@ use crate::io_feed::WS_IO_FEED_TYPES;
 pub async fn ws_handler(state: &State<AppState>) -> Result<(), rocket::http::Status> {
     let ws_list    = state.ws_list.clone();
     let ws_topics  = state.ws_topics.clone();
+    let cluster    = state.cluster.clone();
     let jwt_secret = state.jwt_secret.clone();
     let graph      = state.graph.clone();
     let use_https  = state.use_https;
     tokio::spawn(async move {
-        if let Err(e) = run_ws_server(ws_list, ws_topics, jwt_secret, graph, use_https).await {
+        if let Err(e) = run_ws_server(ws_list, ws_topics, cluster, jwt_secret, graph, use_https).await {
             println!("Error in WebSocket server: {}", e);
         }
     });
@@ -40,6 +41,7 @@ pub async fn ws_handler(state: &State<AppState>) -> Result<(), rocket::http::Sta
 pub async fn run_ws_server(
     ws_list:    WebSocketList,
     ws_topics:  WsTopics,
+    cluster:    Arc<Cluster>,
     jwt_secret: String,
     graph:      Arc<Graph>,
     use_https:  bool,
@@ -66,6 +68,7 @@ pub async fn run_ws_server(
         let secret    = jwt_secret.clone();
         let ws_list   = ws_list.clone();
         let ws_topics = ws_topics.clone();
+        let cluster   = cluster.clone();
         let graph     = graph.clone();
         let acceptor  = tls_acceptor.clone();
 
@@ -76,12 +79,12 @@ pub async fn run_ws_server(
                     Err(e) => { println!("TLS handshake failed from {}: {:?}", peer_addr, e); return; }
                 };
                 match do_ws_handshake(tls_stream, secret).await {
-                    Ok((ws, claims)) => handle_connection(ws, peer_addr, ws_list, ws_topics, graph, claims).await,
+                    Ok((ws, claims)) => handle_connection(ws, peer_addr, ws_list, ws_topics, cluster, graph, claims).await,
                     Err(e) => println!("Connection from {} rejected: {:?}", peer_addr, e),
                 }
             } else {
                 match do_ws_handshake(stream, secret).await {
-                    Ok((ws, claims)) => handle_connection(ws, peer_addr, ws_list, ws_topics, graph, claims).await,
+                    Ok((ws, claims)) => handle_connection(ws, peer_addr, ws_list, ws_topics, cluster, graph, claims).await,
                     Err(e) => println!("Connection from {} rejected: {:?}", peer_addr, e),
                 }
             }
@@ -137,6 +140,7 @@ async fn handle_connection<S>(
     peer_addr: SocketAddr,
     ws_list:   WebSocketList,
     ws_topics: WsTopics,
+    cluster:   Arc<Cluster>,
     _graph:    Arc<Graph>,
     claims:    Claims,
 ) where
@@ -217,13 +221,10 @@ async fn handle_connection<S>(
                                     }
                                 }
 
-                                let response = Message::Text(serde_json::to_string(&incoming_message).unwrap());
-                                let list = ws_list_incoming.lock().await;
-                                println!("Broadcasting message to {} clients", list.len());
-                                for client in list.values() {
-                                    if client.tx.send(response.clone()).is_err() {
-                                        println!("Failed to send message to {}", peer_addr);
-                                    }
+                                // To every client on every pod, the sender included
+                                // (each tab ignores its own echo)
+                                if let Ok(frame) = serde_json::to_string(&incoming_message) {
+                                    cluster.broadcast(Audience::everyone(), frame).await;
                                 }
                             }
                             Err(e) => {

@@ -10,11 +10,11 @@
 
 use crate::auth::AuthenticatedUser;
 use crate::role::Role;
-use crate::structs::{AppState, IncomingMessage, MessageData};
+use crate::cluster::Audience;
+use crate::structs::AppState;
 use neo4rs::query;
 use rocket::{get, http::Status, post, serde::json::Json, State};
 use serde::{Deserialize, Serialize};
-use tokio_tungstenite::tungstenite::Message;
 
 /// Websocket type carrying one saved part comment to every client. Server-sent
 /// only — wsserver refuses to relay it from a client.
@@ -42,16 +42,7 @@ fn server_error(context: &str, e: impl std::fmt::Debug) -> ApiError {
 /// Push a saved comment to every open screen, whatever page or topic it's on.
 async fn broadcast(state: &AppState, saved: &PartComment) {
     let Ok(payload) = serde_json::to_string(saved) else { return };
-    let ws_msg = IncomingMessage {
-        r#type: WS_PART_COMMENT.to_string(),
-        data:   Some(MessageData { message: payload }),
-    };
-    if let Ok(message) = serde_json::to_string(&ws_msg) {
-        let ws_list = state.ws_list.lock().await;
-        for crate::structs::WsClient { tx, .. } in ws_list.values() {
-            let _ = tx.send(Message::Text(message.clone()));
-        }
-    }
+    state.cluster.broadcast_message(Audience::everyone(), WS_PART_COMMENT, Some(payload)).await;
 }
 
 fn forbidden(role: &Role) -> Option<ApiError> {
