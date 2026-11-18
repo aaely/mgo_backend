@@ -1,5 +1,5 @@
 use crate::structs::*;
-use crate::helpers::{build_update_query, get_requested_fields, lowest_doh_deck, post_slack_message, recently_delivered, trailer_field};
+use crate::helpers::{build_update_query, get_requested_fields, lowest_doh_deck, post_slack_message, post_slack_table, recently_delivered, trailer_field};
 use crate::cluster::Audience;
 use crate::permissions;
 use crate::auth::{AuthenticatedUser, AdminOrManager, AdminOnly, AdminOrSupervisor};
@@ -3875,22 +3875,28 @@ pub async fn send_rescheduled_slack(
 ) -> Result<Json<&'static str>, Json<&'static str>> {
     let graph = &state.graph;
 
-    let mut lines: Vec<String> = Vec::new();
+    let mut rows: Vec<Vec<String>> = Vec::with_capacity(trailers.len());
     for (i, trl) in trailers.iter().enumerate() {
         let deck = lowest_doh_deck(graph, &trl.route_id).await;
-
-        let deck_str = if deck.is_empty() { String::new() } else { format!(" | Deck: {}", deck) };
-        lines.push(format!(
-            "{}. Load: {} | Route: {} | SCAC: {} | Trailer: {} | Dock: {}{} | Date: {} | Time: {} | DoH: {}",
-            i + 1,
-            trl.lms_accent, trl.route_id, trl.scac, trl.trailer1, trl.dock_code, deck_str,
-            trl.schedule_start_date, trl.adjusted_start_time, trl.lowest_doh,
-        ));
+        rows.push(vec![
+            (i + 1).to_string(),
+            trl.lms_accent.clone(),
+            trl.origin.clone(),
+            trl.route_id.clone(),
+            trl.scac.clone(),
+            trl.trailer1.clone(),
+            trl.dock_code.clone(),
+            deck,
+            trl.schedule_start_date.clone(),
+            trl.adjusted_start_time.clone(),
+            trl.lowest_doh.clone(),
+        ]);
     }
 
-    let text = format!("*Rescheduled Trailers ({})*\n{}", trailers.len(), lines.join("\n"));
-
-    post_slack_message(SlackChannel::Reschedules.webhook_var(), &text).await.map_err(|e| {
+    let title = format!("Rescheduled Trailers ({})", trailers.len());
+    let headers = ["#", "Load", "Origin", "Route", "SCAC", "Trailer", "Dock", "Deck", "Date", "Time", "DoH"];
+    // "#" and "DoH" are numbers, aligned right
+    post_slack_table(SlackChannel::Reschedules.webhook_var(), &title, &headers, &rows, &[0, 10]).await.map_err(|e| {
         eprintln!("Failed to send rescheduled trailers to Slack: {:?}", e);
         Json("Slack request failed")
     })?;

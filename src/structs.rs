@@ -451,6 +451,7 @@ pub struct ShiftSlot {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RescheduledTrailer {
     pub lms_accent:         String,
+    pub origin:             String,
     pub route_id:           String,
     pub scac:               String,
     pub trailer1:           String,
