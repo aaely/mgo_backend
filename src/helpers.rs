@@ -213,8 +213,12 @@ const SLACK_TABLE_MAX_CHARS: usize = 9_000;
 /// when Slack's per-table limits require it. Columns listed in `right_aligned`
 /// (numbers) are aligned right. Empty cells show as "-".
 ///
-/// If Slack rejects the table block (HTTP 400), the same rows go out as a
-/// fixed-width text table in a code block, so the message still arrives.
+/// Under the table, a "Copy for Excel" code block holds the same rows separated
+/// by tabs: copying Slack's table block itself pastes each row into one cell,
+/// while Excel splits tab-separated text into cells.
+///
+/// If Slack rejects the blocks (HTTP 400), the same rows go out as a fixed-width
+/// text table plus the tab-separated copy, so the message still arrives.
 pub async fn post_slack_table(
     webhook_var: &str,
     title: &str,
@@ -240,7 +244,10 @@ pub async fn post_slack_table(
         if response.status() == reqwest::StatusCode::BAD_REQUEST {
             let reason = response.text().await.unwrap_or_default();
             eprintln!("Slack refused the table block ({reason}); sending it as a text table instead");
-            let text = format!("*{heading}*\n```\n{}\n```", text_table(&headers, chunk, right_aligned));
+            let mut text = format!("*{heading}*\n```\n{}\n```", text_table(&headers, chunk, right_aligned));
+            if !chunk.is_empty() {
+                text.push_str(&format!("\nCopy for Excel:\n```\n{}\n```", tsv_table(&headers, chunk)));
+            }
             client
                 .post(&url)
                 .json(&serde_json::json!({ "text": text }))
@@ -313,9 +320,37 @@ fn slack_table_payload(
             "column_settings": column_settings,
             "rows": table_rows,
         }));
+
+        blocks.push(serde_json::json!({
+            "type": "context",
+            "elements": [{ "type": "mrkdwn", "text": "Copy for Excel:" }],
+        }));
+        blocks.push(serde_json::json!({
+            "type": "rich_text",
+            "elements": [{
+                "type": "rich_text_preformatted",
+                "elements": [{ "type": "text", "text": tsv_table(headers, rows) }],
+            }],
+        }));
     }
 
     serde_json::json!({ "text": heading, "blocks": blocks })
+}
+
+/// The rows as tab-separated lines, header first, which Excel pastes into
+/// separate cells. Empty cells stay empty; tabs and line breaks inside a value
+/// become spaces so they can't shift the columns.
+fn tsv_table(headers: &[String], rows: &[Vec<String>]) -> String {
+    std::iter::once(headers)
+        .chain(rows.iter().map(Vec::as_slice))
+        .map(|row| {
+            row.iter()
+                .map(|c| c.trim().replace(['\t', '\r', '\n'], " "))
+                .collect::<Vec<_>>()
+                .join("\t")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The rows as fixed-width text with a rule under the header, for a code block
@@ -644,6 +679,17 @@ mod slack_table_tests {
         assert_eq!(table["column_settings"][0]["align"], "right");
         assert!(table["column_settings"][1].is_null());
         assert_eq!(table["column_settings"][2]["align"], "right");
+
+        assert_eq!(p["blocks"][2]["elements"][0]["text"], "Copy for Excel:");
+        let copy = &p["blocks"][3]["elements"][0];
+        assert_eq!(copy["type"], "rich_text_preformatted");
+        assert_eq!(copy["elements"][0]["text"], "#\tLoad\tDoH\n1\t12345\t\n2\t678\t0.5");
+    }
+
+    #[test]
+    fn tsv_keeps_blanks_empty_and_strips_tabs_inside_values() {
+        let rows = vec![row(1, "a\tb", ""), row(2, " c\nd ", "1")];
+        assert_eq!(tsv_table(&headers(), &rows), "#\tLoad\tDoH\n1\ta b\t\n2\tc d\t1");
     }
 
     #[test]
