@@ -744,6 +744,28 @@ fn blackout_details(approved: bool, approver: &str, reason: &str) -> (Option<Str
     (Some(approver.trim().to_uppercase()), Some(reason.trim().to_string()))
 }
 
+/// An Exception or DyComm Log entry as one line for an audit event, e.g.
+/// "Load 12345 | Trailer ABC123 | Dock D1 | Delivery 2026-11-24 14:00 | Updated 2026-11-24 13:55 by jdoe".
+/// Blank parts are left out: entries saved before updatedAt / updatedBy were
+/// stored have no "Updated" part.
+fn log_entry_summary(load: &str, trailer: &str, dock: &str, date: &str, time: &str, updated_at: &str, updated_by: &str) -> String {
+    let mut parts = vec![format!("Load {load}"), format!("Trailer {trailer}"), format!("Dock {dock}")];
+
+    let delivery = format!("{} {}", date.trim(), time.trim());
+    if !delivery.trim().is_empty() {
+        parts.push(format!("Delivery {}", delivery.trim()));
+    }
+
+    match (updated_at.trim(), updated_by.trim()) {
+        ("", "") => {}
+        (at, "")  => parts.push(format!("Updated {at}")),
+        ("", by)  => parts.push(format!("Updated by {by}")),
+        (at, by)  => parts.push(format!("Updated {at} by {by}")),
+    }
+
+    parts.join(" | ")
+}
+
 #[post("/api/upload_exception", format = "json", data = "<upload_exception>")]
 pub async fn upload_exception(
     upload_exception: Json<Vec<ExceptionLogEntry>>,
@@ -776,9 +798,16 @@ pub async fn upload_exception(
         return Err((Status::UnprocessableEntity, Json(msg)));
     }
 
+    let updated_at = chrono::Utc::now().format("%Y-%m-%d %H:%M").to_string();
+
     for line in upload_exception.iter() {
         let (approver, reason) = blackout_details(line.blackoutApproved, &line.blackoutApprover, &line.blackoutReason);
+        // `before` holds the entry as it was before this save (null for a new
+        // entry), read ahead of the MERGE so ON MATCH SET hasn't overwritten it
+        // yet. It becomes the audit event's old value.
         let query = query("
+            OPTIONAL MATCH (prev:ExceptionLogEntry {loadNum: $loadNum, dock: $dock, trailer1: $trailer1})
+            WITH head(collect(prev { .newDate, .newTime, .updatedAt, .updatedBy })) AS before
             MERGE (e:ExceptionLogEntry {loadNum: $loadNum, dock: $dock, trailer1: $trailer1})
             ON CREATE SET
                 e.type         = $type,
@@ -801,7 +830,9 @@ pub async fn upload_exception(
                 e.blackoutApprovedBy = $approvedBy,
                 e.blackoutApprovedAt = $approvedAt,
                 e.blackoutApprover   = $approver,
-                e.blackoutReason     = $reason
+                e.blackoutReason     = $reason,
+                e.updatedAt          = $updated_at,
+                e.updatedBy          = $updated_by
             ON MATCH SET
                 e.type            = $type,
                 e.status          = $status,
@@ -823,8 +854,15 @@ pub async fn upload_exception(
                 e.blackoutApprovedBy = $approvedBy,
                 e.blackoutApprovedAt = $approvedAt,
                 e.blackoutApprover   = $approver,
-                e.blackoutReason     = $reason
-            RETURN e
+                e.blackoutReason     = $reason,
+                e.updatedAt          = $updated_at,
+                e.updatedBy          = $updated_by
+            RETURN e,
+                before IS NOT NULL               AS existed,
+                coalesce(before.newDate, '')     AS prevDate,
+                coalesce(before.newTime, '')     AS prevTime,
+                coalesce(before.updatedAt, '')   AS prevUpdatedAt,
+                coalesce(before.updatedBy, '')   AS prevUpdatedBy
         ")
         .param("loadNum",      line.loadNum.clone())
         .param("dock",         line.dock.clone())
@@ -848,9 +886,11 @@ pub async fn upload_exception(
         .param("repowerLoadNum",  line.repowerLoadNum.clone())
         // Who acknowledged approval for a blacked-out hour, and when; null otherwise
         .param("approvedBy",      line.blackoutApproved.then(|| user.0.username.clone()))
-        .param("approvedAt",      line.blackoutApproved.then(|| chrono::Utc::now().format("%Y-%m-%d %H:%M").to_string()))
+        .param("approvedAt",      line.blackoutApproved.then(|| updated_at.clone()))
         .param("approver",        approver)
-        .param("reason",          reason);
+        .param("reason",          reason)
+        .param("updated_at",      updated_at.clone())
+        .param("updated_by",      user.0.username.clone());
 
         match graph.execute(query).await {
             Ok(mut result) => {
@@ -886,6 +926,24 @@ pub async fn upload_exception(
                     };
 
                     // ── Audit trail: log exception upload ──
+                    // Old value: the entry before this save (blank for a new one).
+                    // New value: the entry as saved now.
+                    let old_value = if row.get::<bool>("existed").unwrap_or(false) {
+                        log_entry_summary(
+                            &record.loadNum, &record.trailer1, &record.dock,
+                            &row.get::<String>("prevDate").unwrap_or_default(),
+                            &row.get::<String>("prevTime").unwrap_or_default(),
+                            &row.get::<String>("prevUpdatedAt").unwrap_or_default(),
+                            &row.get::<String>("prevUpdatedBy").unwrap_or_default(),
+                        )
+                    } else {
+                        String::new()
+                    };
+                    let new_value = log_entry_summary(
+                        &record.loadNum, &record.trailer1, &record.dock,
+                        &record.newDate, &record.newTime, &updated_at, &user.0.username,
+                    );
+
                     let audit_timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
                     let audit_op_date   = chrono::Utc::now().format("%Y-%m-%d").to_string();
                     let aq = neo4rs::query("
@@ -893,15 +951,16 @@ pub async fn upload_exception(
                         CREATE (a:AuditEvent {
                             trailer_uuid: '',
                             field:        'exception_uploaded',
-                            old_value:    '',
-                            new_value:    $load_num,
+                            old_value:    $old_value,
+                            new_value:    $new_value,
                             timestamp:    $timestamp,
                             updated_by:   $updated_by
                         })
                         CREATE (o)-[:HAS_AUDIT]->(a)
                     ")
                     .param("op_date",    audit_op_date)
-                    .param("load_num",   line.loadNum.clone())
+                    .param("old_value",  old_value)
+                    .param("new_value",  new_value)
                     .param("timestamp",  audit_timestamp)
                     .param("updated_by", user.0.username.clone());
 
@@ -1075,7 +1134,19 @@ pub async fn upload_dycomm(
 
     for line in upload_dycomm.iter() {
         let (approver, reason) = blackout_details(line.blackoutApproved, &line.blackoutApprover, &line.blackoutReason);
+        // `before` holds the entry as it was before this save (null for a new
+        // entry), read ahead of the MERGE so ON MATCH SET hasn't overwritten it
+        // yet. It becomes the audit event's old value. Entries saved before
+        // updatedBy was stored name their creator only if never edited since.
         let query = query("
+            OPTIONAL MATCH (prev:DyCommLogEntry {loadNum: $loadNum, dock: $dock, trailer: $trailer})
+            WITH head(collect(prev {
+                .deliveryDate, .deliveryTime, .updatedAt,
+                updatedBy: CASE
+                    WHEN prev.updatedBy IS NOT NULL THEN prev.updatedBy
+                    WHEN prev.updatedAt = prev.createdAt THEN prev.createdBy
+                END
+            })) AS before
             MERGE (d:DyCommLogEntry {loadNum: $loadNum, dock: $dock, trailer: $trailer})
             ON CREATE SET
                 d.scac         = $scac,
@@ -1089,6 +1160,7 @@ pub async fn upload_dycomm(
                 d.createdBy    = $createdBy,
                 d.createdAt    = $updated_at,
                 d.updatedAt    = $updated_at,
+                d.updatedBy    = $updated_by,
                 d.blackoutApprovedBy = $approvedBy,
                 d.blackoutApprovedAt = $approvedAt,
                 d.blackoutApprover   = $approver,
@@ -1103,11 +1175,17 @@ pub async fn upload_dycomm(
                 d.part         = $part,
                 d.pdt          = $pdt,
                 d.updatedAt    = $updated_at,
+                d.updatedBy    = $updated_by,
                 d.blackoutApprovedBy = $approvedBy,
                 d.blackoutApprovedAt = $approvedAt,
                 d.blackoutApprover   = $approver,
                 d.blackoutReason     = $reason
-            RETURN d
+            RETURN d,
+                before IS NOT NULL                  AS existed,
+                coalesce(before.deliveryDate, '')   AS prevDate,
+                coalesce(before.deliveryTime, '')   AS prevTime,
+                coalesce(before.updatedAt, '')      AS prevUpdatedAt,
+                coalesce(before.updatedBy, '')      AS prevUpdatedBy
         ")
         .param("loadNum",      line.loadNum.clone())
         .param("dock",         line.dock.clone())
@@ -1121,6 +1199,7 @@ pub async fn upload_dycomm(
         .param("part",         line.part.clone())
         .param("pdt",          line.pdt.clone())
         .param("updated_at",    updated_at.clone())
+        .param("updated_by",   user.0.username.clone())
         .param("createdBy",    line.createdBy.clone())
         // Who acknowledged approval for a blacked-out hour, and when; null otherwise
         .param("approvedBy",   line.blackoutApproved.then(|| user.0.username.clone()))
@@ -1154,6 +1233,24 @@ pub async fn upload_dycomm(
                     };
 
                     // ── Audit trail: log dycomm upload ──
+                    // Old value: the entry before this save (blank for a new one).
+                    // New value: the entry as saved now.
+                    let old_value = if row.get::<bool>("existed").unwrap_or(false) {
+                        log_entry_summary(
+                            &record.loadNum, &record.trailer, &record.dock,
+                            &row.get::<String>("prevDate").unwrap_or_default(),
+                            &row.get::<String>("prevTime").unwrap_or_default(),
+                            &row.get::<String>("prevUpdatedAt").unwrap_or_default(),
+                            &row.get::<String>("prevUpdatedBy").unwrap_or_default(),
+                        )
+                    } else {
+                        String::new()
+                    };
+                    let new_value = log_entry_summary(
+                        &record.loadNum, &record.trailer, &record.dock,
+                        &record.deliveryDate, &record.deliveryTime, &updated_at, &user.0.username,
+                    );
+
                     let audit_timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
                     let audit_op_date   = chrono::Utc::now().format("%Y-%m-%d").to_string();
                     let aq = neo4rs::query("
@@ -1161,15 +1258,16 @@ pub async fn upload_dycomm(
                         CREATE (a:AuditEvent {
                             trailer_uuid: '',
                             field:        'dycomm_uploaded',
-                            old_value:    '',
-                            new_value:    $load_num,
+                            old_value:    $old_value,
+                            new_value:    $new_value,
                             timestamp:    $timestamp,
                             updated_by:   $updated_by
                         })
                         CREATE (o)-[:HAS_AUDIT]->(a)
                     ")
                     .param("op_date",    audit_op_date)
-                    .param("load_num",   line.loadNum.clone())
+                    .param("old_value",  old_value)
+                    .param("new_value",  new_value)
                     .param("timestamp",  audit_timestamp)
                     .param("updated_by", user.0.username.clone());
 
@@ -4019,4 +4117,26 @@ pub async fn delete_io_trailer(
     publish_io_removed(state, &req.trailer).await;
 
     Ok(Json("Trailer deleted"))
+}
+
+#[cfg(test)]
+mod log_entry_summary_tests {
+    use super::log_entry_summary;
+
+    #[test]
+    fn full_entry() {
+        assert_eq!(
+            log_entry_summary("12345", "ABC123", "D1", "2026-11-24", "14:00", "2026-11-24 13:55", "jdoe"),
+            "Load 12345 | Trailer ABC123 | Dock D1 | Delivery 2026-11-24 14:00 | Updated 2026-11-24 13:55 by jdoe"
+        );
+    }
+
+    #[test]
+    fn leaves_out_blank_parts() {
+        assert_eq!(log_entry_summary("1", "T", "D", "", "", "", ""), "Load 1 | Trailer T | Dock D");
+        assert_eq!(log_entry_summary("1", "T", "D", "", "09:30", "2026-11-01 08:00", ""),
+                   "Load 1 | Trailer T | Dock D | Delivery 09:30 | Updated 2026-11-01 08:00");
+        assert_eq!(log_entry_summary("1", "T", "D", "2026-11-02", "", "", "jdoe"),
+                   "Load 1 | Trailer T | Dock D | Delivery 2026-11-02 | Updated by jdoe");
+    }
 }
